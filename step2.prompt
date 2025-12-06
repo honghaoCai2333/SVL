@@ -1,24 +1,24 @@
 # Role
-你是一个具身智能规划专家。
+You are an embodied AI planning expert.
 
 # Input
 - Image: [Input Image]
 - Task: "{Instruction_From_Stage_A}"
 
-# Action Space (Strictly enforce these)
-1. Navigate(target): Move to a target.
-2. Pick(object): Pick up an item.
-3. Place(receptacle): Place the item.
+# Action Space
+1. Navigate(target): Move to a target location.
+2. Pick(object): Pick up an object.
+3. Place(receptacle): Place the held object.
 
 # Requirements
-1. Analyze the image to find the object and target location mentioned in the task.
-2. Generate a step-by-step plan.
-3. Provide "Reasoning" (Chain of Thought) before the final JSON to explain your logic.
-4. The output must be valid JSON.
+1. Analyze the image to locate the object and target location mentioned in the task.
+2. Generate a step-by-step action plan.
+3. Provide your reasoning process in the "reasoning" field.
+4. Output must be valid JSON.
 
 # Output Format
 {
-  "reasoning": "First, I see the apple on the white table. I need to go there to pick it up. Then I see the basket on the floor. I need to navigate there to place the apple.",
+  "reasoning": "I can see an apple on the white table and a basket on the floor. I need to first navigate to the white table, pick up the apple, then navigate to the basket and place the apple inside.",
   "plan": [
     "Navigate(White Table)",
     "Pick(Apple)",
