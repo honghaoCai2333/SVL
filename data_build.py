@@ -1,0 +1,207 @@
+import asyncio
+import aiohttp
+import base64
+import json
+import re
+from pathlib import Path
+
+MODEL1 = MODEL2 = "google/gemini-3-pro-preview"
+OPENROUTER_API_KEY = "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"
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+IMAGE_ROOT = Path("./bdv2")
+TASK_OUT = Path("./tasks.jsonl")
+ACTION_OUT = Path("./actions.jsonl")
+
+SEM = asyncio.Semaphore(1)
+
+TASK_SYSTEM_PROMPT = """
+    # Role
+You are the brain of a robot. Your task is to observe the image and propose only one reasonable and executable instructions for this scene.
+
+# Constraints
+1. Tasks can only involve moving, picking up, and placing objects.
+2. Objects mentioned in the task must be clearly visible in the image.
+3. Target locations mentioned in the task must also be visible in the image.
+4. Output must be in JSON format.
+
+# Output Format
+{
+  "task": [
+    "Throw the cup on the black table into the trash can",
+    "Put the bowl on the white table into the sink"
+  ]
+}
+"""
+
+ACTION_SYSTEM_PROMPT = """
+# Role
+You are an embodied AI planning expert.
+
+# Input
+- Image: [Input Image]
+- Task: "{Instruction_From_Stage_A}"
+
+# Action Space
+1. Navigate(target): Move to a target location.
+2. Pick(object): Pick up an object.
+3. Place(receptacle): Place the held object.
+
+# Requirements
+1. Analyze the image to locate the object and target location mentioned in the task.
+2. Generate a step-by-step action plan.
+3. Provide your reasoning process in the "reasoning" field.
+4. Output must be valid JSON.
+
+# Output Format
+{
+  "reasoning": "I can see an apple on the white table and a basket on the floor. I need to first navigate to the white table, pick up the apple, then navigate to the basket and place the apple inside.",
+  "plan": [
+    "Navigate(White Table)",
+    "Pick(Apple)",
+    "Navigate(Basket)",
+    "Place(Basket)"
+  ]
+}
+"""
+
+
+
+def encode_image(path: Path):
+    return base64.b64encode(path.read_bytes()).decode("utf-8")
+
+async def call_openrouter(session, model, messages):
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 2048  
+    }
+    async with session.post(OPENROUTER_URL, headers=headers, json=payload) as resp:
+        data = await resp.json()
+        try:
+            ret = data["choices"][0]["message"]["content"]
+        except:
+            ret = None
+            print("return false")
+            print(data)
+        return ret
+
+async def safe_call_openrouter(session, model, messages):
+    async with SEM:   
+        return await call_openrouter(session, model, messages)
+
+def parse_task(text):
+
+    try:
+        data = json.loads(text)
+        if isinstance(data, dict) and isinstance(data.get("task"), str):
+            return data["task"].strip()
+    except:
+        pass
+    
+
+    match = re.search(r'"task"\s*:\s*"([^"]+)"', text)
+    return match.group(1).strip() if match else None
+
+def parse_plan(text):
+
+    try:
+        data = json.loads(text)
+        plan = data.get("plan")
+        if isinstance(plan, list):
+            return [str(step).strip() for step in plan]
+    except:
+        pass
+
+
+    match = re.search(r'"plan"\s*:\s*\[(.*?)\]', text, re.S)
+    if not match:
+        return None
+
+    steps = re.findall(r'"([^"]+)"', match.group(1))
+    return steps if steps else None
+
+def collect_first_images(root: Path):
+    print("collecting_img_path")
+    image_ext = {".jpg", ".jpeg", ".png"}
+    selected = []
+    for sub in root.rglob("*"):
+        if sub.is_dir():
+            imgs = sorted(p for p in sub.iterdir() if p.suffix.lower() in image_ext)
+            if imgs:
+                first = imgs[0]
+                if first.stem.endswith("_0"):
+                    selected.append(first)
+    print("img_dir_sum",len(selected))
+    return selected
+
+async def process_image(session, image_path: Path):
+    img_b64 = encode_image(image_path)
+    image_content = [
+        {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/jpeg;base64,{img_b64}"
+            }
+        }
+    ]
+
+    task_messages = [
+        {"role": "system", "content": TASK_SYSTEM_PROMPT},
+        {"role": "user", "content": image_content},
+    ]
+    print("task_info_load_complete")
+
+    task_raw = await safe_call_openrouter(session, MODEL1, task_messages)
+    print("task_send_succ")
+    task = parse_task(task_raw)
+    try:
+        
+        print(task)
+        print("task_json_succ")
+    except:
+        print("task_json_false")
+        if task != None:
+            
+            print(task)
+        else:
+            print("task_is_none")
+            print(task_raw)
+    if not task:
+        return
+
+    action_messages = [
+        {"role": "system", "content": ACTION_SYSTEM_PROMPT},
+        {"role": "user", "content": image_content},
+        {"role": "user", "content": f"task: {task}"},
+    ]
+    print("action_info_load_complete")
+
+    action_raw = await safe_call_openrouter(session, MODEL2, action_messages)
+    print("action_send_succ")
+    plan = parse_plan(action_raw)
+    print(plan[:20])
+    if not plan:
+        return
+
+    TASK_OUT.open("a", encoding="utf-8").write(json.dumps({
+        "image": str(image_path),
+        "task": task
+    }, ensure_ascii=False) + "\n")
+
+    ACTION_OUT.open("a", encoding="utf-8").write(json.dumps({
+        "image": str(image_path),
+        "task": task,
+        "plan": plan
+    }, ensure_ascii=False) + "\n")
+
+async def main():
+    images = collect_first_images(IMAGE_ROOT)
+    async with aiohttp.ClientSession() as session:
+        await asyncio.gather(*(process_image(session, img) for img in images))
+
+asyncio.run(main())
