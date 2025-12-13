@@ -3,6 +3,7 @@ import aiohttp
 import base64
 import json
 import re
+import shutil
 from pathlib import Path
 
 MODEL1 = MODEL2 = "google/gemini-3-pro-preview"
@@ -10,6 +11,7 @@ OPENROUTER_API_KEY = "sk-or-v1-ed31f717857bb8ac896b9de22f6f727153d4176e2eac5e6a4
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 IMAGE_ROOT = Path("./bdv2")
+PROCESSED_ROOT = Path("./processed")
 TASK_OUT = Path("./tasks.jsonl")
 ACTION_OUT = Path("./actions.jsonl")
 
@@ -188,16 +190,40 @@ async def process_image(session, image_path: Path):
     if not plan:
         return
 
+    # 计算处理后的路径（保持原有目录结构）
+    rel_path = image_path.relative_to(IMAGE_ROOT)
+    processed_img_path = PROCESSED_ROOT / rel_path
+    processed_json_path = processed_img_path.with_suffix('.json')
+
+    # 创建目录
+    processed_img_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # 创建单独的 json 文件（方便检查）
+    json_data = {
+        "image": str(processed_img_path),
+        "task": task,
+        "plan": plan
+    }
+    processed_json_path.write_text(
+        json.dumps(json_data, ensure_ascii=False, indent=2),
+        encoding="utf-8"
+    )
+
+    # 追加到总的 jsonl 文件
     TASK_OUT.open("a", encoding="utf-8").write(json.dumps({
-        "image": str(image_path),
+        "image": str(processed_img_path),
         "task": task
     }, ensure_ascii=False) + "\n")
 
     ACTION_OUT.open("a", encoding="utf-8").write(json.dumps({
-        "image": str(image_path),
+        "image": str(processed_img_path),
         "task": task,
         "plan": plan
     }, ensure_ascii=False) + "\n")
+
+    # 移动图片到 processed 目录
+    shutil.move(str(image_path), str(processed_img_path))
+    print(f"Processed and moved: {image_path} -> {processed_img_path}")
 
 async def main():
     images = collect_first_images(IMAGE_ROOT)
