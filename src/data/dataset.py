@@ -8,10 +8,10 @@ Supports:
 """
 
 import json
-import torch
+import random
 from pathlib import Path
 from PIL import Image
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any
 from torch.utils.data import Dataset
 
 
@@ -140,7 +140,6 @@ class ContrastiveDataset(HARPDataset):
         # Get negative plan
         img_path = pos_item['image']
         if img_path in self.negative_lookup and len(self.negative_lookup[img_path]) > 0:
-            import random
             neg_plan_list = random.choice(self.negative_lookup[img_path])
             plan_negative = self.format_plan(neg_plan_list)
         else:
@@ -201,62 +200,6 @@ class RLDataset(HARPDataset):
             result['pixel_values'] = self.image_processor(image, return_tensors='pt').pixel_values[0]
 
         return result
-
-
-def collate_fn_sft(batch: List[Dict[str, Any]], processor, tokenizer) -> Dict[str, torch.Tensor]:
-    """
-    Collate function for SFT training with Qwen2-VL
-
-    Args:
-        batch: List of samples from SFTDataset
-        processor: Qwen2VLProcessor
-        tokenizer: Qwen2VLTokenizer
-
-    Returns:
-        Batched tensors ready for model input
-    """
-    images = [item['image'] for item in batch]
-    input_texts = [item['input_text'] for item in batch]
-    target_texts = [item['target_text'] for item in batch]
-
-    # Prepare messages for Qwen2-VL format
-    messages_list = []
-    for input_text in input_texts:
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": "placeholder"},
-                    {"type": "text", "text": input_text}
-                ]
-            }
-        ]
-        messages_list.append(messages)
-
-    # Process inputs
-    texts = [processor.apply_chat_template(msg, tokenize=False, add_generation_prompt=True)
-             for msg in messages_list]
-
-    # Tokenize
-    inputs = processor(
-        text=texts,
-        images=images,
-        return_tensors="pt",
-        padding=True,
-        truncation=True
-    )
-
-    # Tokenize targets (labels)
-    labels = tokenizer(
-        target_texts,
-        return_tensors="pt",
-        padding=True,
-        truncation=True
-    )
-
-    inputs['labels'] = labels['input_ids']
-
-    return inputs
 
 
 if __name__ == "__main__":

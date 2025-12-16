@@ -50,10 +50,22 @@ class NegativeSampler:
         negatives = []
         n = len(data)
 
+        if n < 2:
+            return negatives  # 需要至少2个样本才能生成random negative
+
         for item in data:
             for _ in range(num_negatives):
                 # Randomly select a different plan
-                neg_idx = random.choice([i for i in range(n) if data[i]['image'] != item['image']])
+                candidate_indices = [i for i in range(n) if data[i]['image'] != item['image']]
+
+                # 如果没有不同图片的样本，选择不同的plan（即使图片相同）
+                if not candidate_indices:
+                    candidate_indices = [i for i in range(n) if data[i]['plan'] != item['plan']]
+
+                if not candidate_indices:
+                    continue  # 如果仍然没有候选，跳过
+
+                neg_idx = random.choice(candidate_indices)
                 negative = {
                     'image': item['image'],
                     'task': item['task'],
