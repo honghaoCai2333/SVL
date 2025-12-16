@@ -1,6 +1,6 @@
 # Data Generation
 google-generativeai>=0.3.0
-aiohttp>=9.0.0
+aiohttp>=3.9.0
 tqdm>=4.66.0
 Pillow>=10.0.0
 
