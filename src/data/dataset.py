@@ -14,6 +14,11 @@ from PIL import Image
 from typing import List, Dict, Any
 from torch.utils.data import Dataset
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class HARPDataset(Dataset):
     """Base dataset for HARP training"""
@@ -204,12 +209,12 @@ class RLDataset(HARPDataset):
 
 if __name__ == "__main__":
     # Test dataset loading
-    print("Testing SFTDataset...")
+    logger.info("Testing SFTDataset...")
     sft_dataset = SFTDataset(jsonl_path=Path("./actions.jsonl"))
-    print(f"Loaded {len(sft_dataset)} samples")
+    logger.info(f"Loaded {len(sft_dataset)} samples")
 
     if len(sft_dataset) > 0:
         sample = sft_dataset[0]
-        print(f"Sample keys: {sample.keys()}")
-        print(f"Input: {sample['input_text']}")
-        print(f"Target: {sample['target_text']}")
+        logger.info(f"Sample keys: {sample.keys()}")
+        logger.info(f"Input: {sample['input_text']}")
+        logger.info(f"Target: {sample['target_text']}")

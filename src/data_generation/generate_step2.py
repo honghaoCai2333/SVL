@@ -11,6 +11,11 @@ from tqdm import tqdm
 import google.generativeai as genai
 from PIL import Image
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class Step2Generator:
     def __init__(
@@ -115,7 +120,7 @@ class Step2Generator:
         
         # Filter successful results
         valid_results = [r for r in step1_results if r.get("success")]
-        print(f"Loaded {len(valid_results)} valid Step1 results")
+        logger.info(f"Loaded {len(valid_results)} valid Step1 results")
         
         # Prepare image-task pairs
         pairs = []
@@ -131,7 +136,7 @@ class Step2Generator:
         if max_samples:
             pairs = pairs[:max_samples]
         
-        print(f"Total {len(pairs)} image-task pairs to process")
+        logger.info(f"Total {len(pairs)} image-task pairs to process")
         
         # Generate plans
         results = []
@@ -151,11 +156,11 @@ class Step2Generator:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
-        print(f"\nGeneration complete:")
-        print(f"  Total: {len(results)}")
-        print(f"  Success: {success_count}")
-        print(f"  Failed: {len(results) - success_count}")
-        print(f"  Output saved to: {output_path}")
+        logger.info(f"\nGeneration complete:")
+        logger.info(f"  Total: {len(results)}")
+        logger.info(f"  Success: {success_count}")
+        logger.info(f"  Failed: {len(results) - success_count}")
+        logger.info(f"  Output saved to: {output_path}")
         
         return results
     
@@ -183,7 +188,7 @@ class Step2Generator:
         if max_samples:
             pairs = pairs[:max_samples]
         
-        print(f"Loaded {len(pairs)} image-task pairs to process")
+        logger.info(f"Loaded {len(pairs)} image-task pairs to process")
         
         # Generate plans
         results = []
@@ -203,11 +208,11 @@ class Step2Generator:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
-        print(f"\nGeneration complete:")
-        print(f"  Total: {len(results)}")
-        print(f"  Success: {success_count}")
-        print(f"  Failed: {len(results) - success_count}")
-        print(f"  Output saved to: {output_path}")
+        logger.info(f"\nGeneration complete:")
+        logger.info(f"  Total: {len(results)}")
+        logger.info(f"  Success: {success_count}")
+        logger.info(f"  Failed: {len(results) - success_count}")
+        logger.info(f"  Output saved to: {output_path}")
         
         return results
 

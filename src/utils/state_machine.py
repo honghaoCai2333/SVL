@@ -8,6 +8,11 @@ Used to validate action sequences and compute transition rewards.
 from typing import List, Tuple, Optional
 from enum import Enum
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class State(Enum):
     """States in the manipulation state machine"""
@@ -180,36 +185,36 @@ def test_state_machine():
     # Test case 1: Valid sequence
     valid_seq = ["Navigate(Table)", "Pick(Apple)", "Navigate(Basket)", "Place(Basket)"]
     is_valid, reward, transitions = sm.validate_sequence(valid_seq)
-    print(f"Test 1 - Valid sequence: {is_valid}, Reward: {reward:.2f}")
+    logger.info(f"Test 1 - Valid sequence: {is_valid}, Reward: {reward:.2f}")
     for state, action, r in transitions:
-        print(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
+        logger.info(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
 
-    print()
+    logger.info()
 
     # Test case 2: Invalid sequence (Pick before Navigate)
     invalid_seq1 = ["Pick(Apple)", "Navigate(Table)", "Place(Basket)"]
     is_valid, reward, transitions = sm.validate_sequence(invalid_seq1)
-    print(f"Test 2 - Pick before Navigate: {is_valid}, Reward: {reward:.2f}")
+    logger.info(f"Test 2 - Pick before Navigate: {is_valid}, Reward: {reward:.2f}")
     for state, action, r in transitions:
-        print(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
+        logger.info(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
 
-    print()
+    logger.info()
 
     # Test case 3: Invalid sequence (Place without Pick)
     invalid_seq2 = ["Navigate(Table)", "Place(Basket)"]
     is_valid, reward, transitions = sm.validate_sequence(invalid_seq2)
-    print(f"Test 3 - Place without Pick: {is_valid}, Reward: {reward:.2f}")
+    logger.info(f"Test 3 - Place without Pick: {is_valid}, Reward: {reward:.2f}")
     for state, action, r in transitions:
-        print(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
+        logger.info(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
 
-    print()
+    logger.info()
 
     # Test case 4: Redundant Navigate
     redundant_seq = ["Navigate(Table)", "Navigate(Table)", "Pick(Apple)", "Navigate(Basket)", "Place(Basket)"]
     is_valid, reward, transitions = sm.validate_sequence(redundant_seq)
-    print(f"Test 4 - Redundant Navigate: {is_valid}, Reward: {reward:.2f}")
+    logger.info(f"Test 4 - Redundant Navigate: {is_valid}, Reward: {reward:.2f}")
     for state, action, r in transitions:
-        print(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
+        logger.info(f"  {state.value} --{action.value}--> (reward: {r:.2f})")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import List, Dict, Any
 import argparse
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 def load_jsonl(file_path: Path) -> List[Dict[str, Any]]:
     """Load data from jsonl file"""
@@ -45,9 +50,9 @@ def split_data(input_path: Path,
     random.seed(seed)
 
     # Load data
-    print(f"Loading data from {input_path}...")
+    logger.info(f"Loading data from {input_path}...")
     data = load_jsonl(input_path)
-    print(f"Total samples: {len(data)}")
+    logger.info(f"Total samples: {len(data)}")
 
     # Shuffle data
     random.shuffle(data)
@@ -60,15 +65,15 @@ def split_data(input_path: Path,
     val_data = data[train_size:]
 
     # Save
-    print(f"Saving train set ({len(train_data)} samples) to {train_path}...")
+    logger.info(f"Saving train set ({len(train_data)} samples) to {train_path}...")
     save_jsonl(train_data, train_path)
 
-    print(f"Saving validation set ({len(val_data)} samples) to {val_path}...")
+    logger.info(f"Saving validation set ({len(val_data)} samples) to {val_path}...")
     save_jsonl(val_data, val_path)
 
-    print("Data split complete!")
-    print(f"Train: {len(train_data)} samples ({len(train_data)/len(data)*100:.1f}%)")
-    print(f"Val: {len(val_data)} samples ({len(val_data)/len(data)*100:.1f}%)")
+    logger.info("Data split complete!")
+    logger.info(f"Train: {len(train_data)} samples ({len(train_data)/len(data)*100:.1f}%)")
+    logger.info(f"Val: {len(val_data)} samples ({len(val_data)/len(data)*100:.1f}%)")
 
     return len(train_data), len(val_data)
 
@@ -93,8 +98,8 @@ if __name__ == "__main__":
     val_path = Path(args.val_output)
 
     if not input_path.exists():
-        print(f"Error: Input file {input_path} does not exist!")
-        print("Please run data_build.py first to generate training data.")
+        logger.info(f"Error: Input file {input_path} does not exist!")
+        logger.info("Please run data_build.py first to generate training data.")
         exit(1)
 
     split_data(

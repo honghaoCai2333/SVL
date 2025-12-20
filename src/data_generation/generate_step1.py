@@ -11,6 +11,11 @@ from tqdm import tqdm
 import google.generativeai as genai
 from PIL import Image
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class Step1Generator:
     def __init__(
@@ -108,7 +113,7 @@ class Step1Generator:
         if max_images:
             image_files = image_files[:max_images]
         
-        print(f"Found {len(image_files)} images to process")
+        logger.info(f"Found {len(image_files)} images to process")
         
         # Generate tasks
         results = []
@@ -125,11 +130,11 @@ class Step1Generator:
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(results, f, indent=2, ensure_ascii=False)
         
-        print(f"\nGeneration complete:")
-        print(f"  Total: {len(results)}")
-        print(f"  Success: {success_count}")
-        print(f"  Failed: {len(results) - success_count}")
-        print(f"  Output saved to: {output_path}")
+        logger.info(f"\nGeneration complete:")
+        logger.info(f"  Total: {len(results)}")
+        logger.info(f"  Success: {success_count}")
+        logger.info(f"  Failed: {len(results) - success_count}")
+        logger.info(f"  Output saved to: {output_path}")
         
         return results
 

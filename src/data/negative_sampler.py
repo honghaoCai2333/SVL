@@ -13,6 +13,11 @@ from pathlib import Path
 from typing import List, Dict, Any
 import copy
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class NegativeSampler:
     def __init__(self, seed: int = 42):
@@ -218,13 +223,13 @@ if __name__ == "__main__":
             num_random=2
         )
 
-        print("Negative Sample Generation Complete!")
-        print(f"Positive samples: {stats['num_positives']}")
-        print(f"Random negatives: {stats['num_random_negatives']}")
-        print(f"Shuffled negatives: {stats['num_shuffled_negatives']}")
-        print(f"Infeasible negatives: {stats['num_infeasible_negatives']}")
-        print(f"Total negatives: {stats['total_negatives']}")
-        print(f"Output saved to: {output_path}")
+        logger.info("Negative Sample Generation Complete!")
+        logger.info(f"Positive samples: {stats['num_positives']}")
+        logger.info(f"Random negatives: {stats['num_random_negatives']}")
+        logger.info(f"Shuffled negatives: {stats['num_shuffled_negatives']}")
+        logger.info(f"Infeasible negatives: {stats['num_infeasible_negatives']}")
+        logger.info(f"Total negatives: {stats['total_negatives']}")
+        logger.info(f"Output saved to: {output_path}")
     else:
-        print(f"Error: {input_path} not found!")
-        print("Please run data_build.py first to generate training data.")
+        logger.info(f"Error: {input_path} not found!")
+        logger.info("Please run data_build.py first to generate training data.")

@@ -1,0 +1,37 @@
+# GRPO Training Configuration for HARP
+# Group Relative Policy Optimization with H-PRM
+
+model:
+  base_model_name: "Qwen/Qwen2.5-VL-7B-Instruct"
+  sft_model_path: "outputs/sft/final"  # SFT 训练后的模型路径
+  freeze_vision_encoder: true
+
+data:
+  train_path: "data/sft_train.jsonl"
+  negative_path: "data/negative_samples.jsonl"
+
+reward:
+  w_format: 0.1       # 格式奖励权重
+  w_action: 0.25      # 动作奖励权重
+  w_transition: 0.25  # 状态转换奖励权重
+  w_task: 0.25        # 任务完成奖励权重
+  w_efficiency: 0.15  # 效率奖励权重
+  use_ftca: true      # 使用细粒度 token 级别奖励分配
+
+training:
+  output_dir: "outputs/grpo"
+  num_epochs: 2
+  per_device_train_batch_size: 1
+  num_candidates: 4           # 每个输入生成多少个候选
+  temperature: 0.8            # 采样温度
+  max_new_tokens: 128         # 最大生成长度
+  learning_rate: 1.0e-6       # 比 SFT 更小的学习率
+  kl_coef: 0.1                # KL 散度惩罚系数
+  weight_decay: 0.01
+  warmup_steps: 50
+  logging_steps: 5
+  save_steps: 200
+  max_grad_norm: 1.0
+  bf16: true
+  report_to: ["tensorboard"]
+  run_name: "grpo_qwen2.5vl"

@@ -41,6 +41,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from src.data.dataset import RLDataset
 from src.models.reward_model import HierarchicalPRM
 from src.utils.prompt_template import PromptTemplate
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class GRPOTrainerForVLM:
@@ -66,7 +69,7 @@ class GRPOTrainerForVLM:
 
         # Setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
+        logger.info(f"Using device: {self.device}")
 
         # Load models
         self.load_models()
@@ -79,8 +82,8 @@ class GRPOTrainerForVLM:
         sft_model_path = self.config['model']['sft_model_path']
         base_model_name = self.config['model']['base_model_name']
 
-        print(f"Loading base model: {base_model_name}")
-        print(f"Loading LoRA weights from: {sft_model_path}")
+        logger.info(f"Loading base model: {base_model_name}")
+        logger.info(f"Loading LoRA weights from: {sft_model_path}")
 
         # Load processor and tokenizer
         self.processor = AutoProcessor.from_pretrained(sft_model_path)
@@ -105,12 +108,12 @@ class GRPOTrainerForVLM:
 
         # Freeze vision encoder
         if self.config['model'].get('freeze_vision_encoder', True):
-            print("Freezing vision encoder...")
+            logger.info("Freezing vision encoder...")
             for param in self.policy_model.base_model.model.visual.parameters():
                 param.requires_grad = False
 
         # Load reference model (frozen, for KL penalty)
-        print("Loading reference model (frozen)...")
+        logger.info("Loading reference model (frozen)...")
         self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             base_model_name,
             torch_dtype=torch.bfloat16 if self.config['training'].get('bf16', True) else torch.float16,
@@ -127,7 +130,7 @@ class GRPOTrainerForVLM:
         # Print trainable parameters
         trainable_params = sum(p.numel() for p in self.policy_model.parameters() if p.requires_grad)
         total_params = sum(p.numel() for p in self.policy_model.parameters())
-        print(f"Trainable params: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
+        logger.info(f"Trainable params: {trainable_params:,} / {total_params:,} ({100 * trainable_params / total_params:.2f}%)")
 
     def setup_optimizer(self):
         """Setup optimizer and scheduler"""
@@ -140,7 +143,7 @@ class GRPOTrainerForVLM:
     def load_data(self):
         """Load training dataset"""
         train_path = Path(self.config['data']['train_path'])
-        print(f"Loading training data from: {train_path}")
+        logger.info(f"Loading training data from: {train_path}")
 
         self.train_dataset = RLDataset(
             jsonl_path=train_path,
@@ -159,7 +162,7 @@ class GRPOTrainerForVLM:
         self.negative_samples = {}
         negative_path = self.config['data'].get('negative_path')
         if negative_path and Path(negative_path).exists():
-            print(f"Loading negative samples from: {negative_path}")
+            logger.info(f"Loading negative samples from: {negative_path}")
             with open(negative_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     neg = json.loads(line)
@@ -168,8 +171,8 @@ class GRPOTrainerForVLM:
                         self.negative_samples[img_path] = []
                     self.negative_samples[img_path].append(neg['plan'])
 
-        print(f"Train samples: {len(self.train_dataset)}")
-        print(f"Negative samples loaded for {len(self.negative_samples)} images")
+        logger.info(f"Train samples: {len(self.train_dataset)}")
+        logger.info(f"Negative samples loaded for {len(self.negative_samples)} images")
 
     def collate_fn(self, batch):
         """Collate function for dataloader"""
@@ -495,7 +498,7 @@ class GRPOTrainerForVLM:
         best_reward = -float('inf')
 
         for epoch in range(self.config['training']['num_epochs']):
-            print(f"\n=== Epoch {epoch + 1}/{self.config['training']['num_epochs']} ===")
+            logger.info(f"\n=== Epoch {epoch + 1}/{self.config['training']['num_epochs']} ===")
 
             epoch_loss = 0.0
             epoch_reward = 0.0
@@ -551,7 +554,7 @@ class GRPOTrainerForVLM:
             # End of epoch
             avg_loss = epoch_loss / len(self.train_dataloader)
             avg_reward = epoch_reward / len(self.train_dataloader)
-            print(f"Epoch {epoch + 1} - Avg Loss: {avg_loss:.4f}, Avg Reward: {avg_reward:.4f}")
+            logger.info(f"Epoch {epoch + 1} - Avg Loss: {avg_loss:.4f}, Avg Reward: {avg_reward:.4f}")
 
             # Save best model
             if avg_reward > best_reward:
@@ -560,14 +563,14 @@ class GRPOTrainerForVLM:
 
         # Save final model
         self.save_checkpoint('final')
-        print("\nGRPO training complete!")
+        logger.info("\nGRPO training complete!")
 
     def save_checkpoint(self, step):
         """Save model checkpoint"""
         output_dir = Path(self.config['training']['output_dir']) / f"checkpoint-{step}"
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"Saving checkpoint to {output_dir}")
+        logger.info(f"Saving checkpoint to {output_dir}")
 
         # Save LoRA weights
         self.policy_model.save_pretrained(output_dir)

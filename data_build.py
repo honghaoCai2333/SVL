@@ -6,6 +6,11 @@ import re
 import shutil
 from pathlib import Path
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 MODEL1 = MODEL2 = "google/gemini-3-pro-preview"
 OPENROUTER_API_KEY = "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"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -88,8 +93,8 @@ async def call_openrouter(session, model, messages):
             ret = data["choices"][0]["message"]["content"]
         except:
             ret = None
-            print("return false")
-            print(data)
+            logger.info("return false")
+            logger.info(data)
         return ret
 
 async def safe_call_openrouter(session, model, messages):
@@ -128,7 +133,7 @@ def parse_plan(text):
     return steps if steps else None
 
 def collect_first_images(root: Path):
-    print("collecting_img_path")
+    logger.info("collecting_img_path")
     image_ext = {".jpg", ".jpeg", ".png"}
     selected = []
     for sub in root.rglob("*"):
@@ -138,7 +143,7 @@ def collect_first_images(root: Path):
                 first = imgs[0]
                 if first.stem.endswith("_0"):
                     selected.append(first)
-    print("img_dir_sum",len(selected))
+    logger.info("img_dir_sum",len(selected))
     return selected
 
 async def process_image(session, image_path: Path):
@@ -156,23 +161,23 @@ async def process_image(session, image_path: Path):
         {"role": "system", "content": TASK_SYSTEM_PROMPT},
         {"role": "user", "content": image_content},
     ]
-    print("task_info_load_complete")
+    logger.info("task_info_load_complete")
 
     task_raw = await safe_call_openrouter(session, MODEL1, task_messages)
-    print("task_send_succ")
+    logger.info("task_send_succ")
     task = parse_task(task_raw)
     try:
         
-        print(task)
-        print("task_json_succ")
+        logger.info(task)
+        logger.info("task_json_succ")
     except:
-        print("task_json_false")
+        logger.info("task_json_false")
         if task != None:
             
-            print(task)
+            logger.info(task)
         else:
-            print("task_is_none")
-            print(task_raw)
+            logger.info("task_is_none")
+            logger.info(task_raw)
     if not task:
         return
 
@@ -181,12 +186,12 @@ async def process_image(session, image_path: Path):
         {"role": "user", "content": image_content},
         {"role": "user", "content": f"task: {task}"},
     ]
-    print("action_info_load_complete")
+    logger.info("action_info_load_complete")
 
     action_raw = await safe_call_openrouter(session, MODEL2, action_messages)
-    print("action_send_succ")
+    logger.info("action_send_succ")
     plan = parse_plan(action_raw)
-    print(plan[:20])
+    logger.info(plan[:20])
     if not plan:
         return
 
@@ -223,7 +228,7 @@ async def process_image(session, image_path: Path):
 
     # 移动图片到 processed 目录
     shutil.move(str(image_path), str(processed_img_path))
-    print(f"Processed and moved: {image_path} -> {processed_img_path}")
+    logger.info(f"Processed and moved: {image_path} -> {processed_img_path}")
 
 async def main():
     images = collect_first_images(IMAGE_ROOT)

@@ -24,6 +24,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 
 from src.data.dataset import SFTDataset
 from src.utils.prompt_template import PromptTemplate
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class SFTTrainer:
@@ -35,7 +38,7 @@ class SFTTrainer:
 
         # Setup device
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        print(f"Using device: {self.device}")
+        logger.info(f"Using device: {self.device}")
 
         # Load model, processor, tokenizer
         self.load_model()
@@ -43,7 +46,7 @@ class SFTTrainer:
     def load_model(self):
         """Load Qwen2.5-VL model with LoRA"""
         model_name = self.config['model']['name']
-        print(f"Loading model: {model_name}")
+        logger.info(f"Loading model: {model_name}")
 
         # Load processor and tokenizer
         self.processor = AutoProcessor.from_pretrained(model_name)
@@ -64,13 +67,13 @@ class SFTTrainer:
 
         # Freeze vision encoder if specified
         if self.config['model'].get('freeze_vision_encoder', True):
-            print("Freezing vision encoder...")
+            logger.info("Freezing vision encoder...")
             for param in self.model.visual.parameters():
                 param.requires_grad = False
 
         # Setup LoRA
         if self.config['model'].get('use_lora', True):
-            print("Setting up LoRA...")
+            logger.info("Setting up LoRA...")
             lora_config = LoraConfig(
                 r=self.config['lora']['rank'],
                 lora_alpha=self.config['lora']['alpha'],
@@ -92,8 +95,8 @@ class SFTTrainer:
         train_path = Path(self.config['data']['train_path'])
         val_path = Path(self.config['data']['val_path'])
 
-        print(f"Loading training data from: {train_path}")
-        print(f"Loading validation data from: {val_path}")
+        logger.info(f"Loading training data from: {train_path}")
+        logger.info(f"Loading validation data from: {val_path}")
 
         # Load datasets
         self.train_dataset = SFTDataset(
@@ -108,8 +111,8 @@ class SFTTrainer:
             tokenizer=self.tokenizer
         )
 
-        print(f"Train samples: {len(self.train_dataset)}")
-        print(f"Val samples: {len(self.val_dataset)}")
+        logger.info(f"Train samples: {len(self.train_dataset)}")
+        logger.info(f"Val samples: {len(self.val_dataset)}")
 
     def collate_fn(self, batch):
         """
@@ -247,17 +250,17 @@ class SFTTrainer:
         )
 
         # Train
-        print("Starting SFT training with TRL...")
+        logger.info("Starting SFT training with TRL...")
         trainer.train()
 
         # Save final model
         final_output_dir = os.path.join(self.config['training']['output_dir'], "final")
-        print(f"Saving final model to: {final_output_dir}")
+        logger.info(f"Saving final model to: {final_output_dir}")
         trainer.save_model(final_output_dir)
         self.processor.save_pretrained(final_output_dir)
         self.tokenizer.save_pretrained(final_output_dir)
 
-        print("SFT training complete!")
+        logger.info("SFT training complete!")
 
 
 def main():

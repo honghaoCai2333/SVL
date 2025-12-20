@@ -9,6 +9,11 @@ Provides consistent prompt formatting for:
 
 from typing import List, Dict, Any
 
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
+
+
 
 class PromptTemplate:
     """Prompt template manager for embodied planning tasks"""
@@ -194,33 +199,33 @@ def test_prompt_template():
     task = "Put the apple on the table into the basket"
     plan = ["Navigate(Table)", "Pick(Apple)", "Navigate(Basket)", "Place(Basket)"]
 
-    print("=== SFT Prompt ===")
+    logger.info("=== SFT Prompt ===")
     sft_prompt = template.format_sft_prompt(task)
-    print(sft_prompt)
-    print()
+    logger.info(sft_prompt)
+    logger.info()
 
-    print("=== Qwen Messages Format ===")
+    logger.info("=== Qwen Messages Format ===")
     messages = template.format_messages_for_qwen(task)
     import json
-    print(json.dumps(messages, indent=2))
-    print()
+    logger.info(json.dumps(messages, indent=2))
+    logger.info()
 
-    print("=== Training Format ===")
+    logger.info("=== Training Format ===")
     training_data = template.format_for_training(task, plan)
-    print(f"Prompt: {training_data['prompt']}")
-    print(f"Completion: {training_data['completion']}")
-    print()
+    logger.info(f"Prompt: {training_data['prompt']}")
+    logger.info(f"Completion: {training_data['completion']}")
+    logger.info()
 
-    print("=== Parse Response ===")
+    logger.info("=== Parse Response ===")
     response = "Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"
     parsed = template.parse_response(response)
-    print(f"Response: {response}")
-    print(f"Parsed: {parsed}")
-    print()
+    logger.info(f"Response: {response}")
+    logger.info(f"Parsed: {parsed}")
+    logger.info()
 
-    print("=== Few-shot Examples ===")
+    logger.info("=== Few-shot Examples ===")
     few_shot = template.format_few_shot_examples()
-    print(few_shot)
+    logger.info(few_shot)
 
 
 if __name__ == "__main__":

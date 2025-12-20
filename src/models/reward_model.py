@@ -11,9 +11,14 @@ Provides multi-level reward signals for embodied planning:
 Also includes FTCA (Fine-grained Token-level Credit Assignment) for token-level rewards.
 """
 
-import re
+import os
+import json
 from typing import List, Dict, Tuple, Optional
+from openai import OpenAI
 from src.utils.state_machine import ActionStateMachine, Action
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class TokenLevelRewardAssigner:
@@ -159,7 +164,10 @@ class HierarchicalPRM:
                  w_transition: float = 0.25,
                  w_task: float = 0.25,
                  w_efficiency: float = 0.15,
-                 use_ftca: bool = True):
+                 use_ftca: bool = True,
+                 openai_api_key: str = None,
+                 openai_base_url: str = None,
+                 llm_model: str = "gpt-4o-mini"):
         """
         Args:
             w_format: Weight for format reward
@@ -168,6 +176,9 @@ class HierarchicalPRM:
             w_task: Weight for task reward
             w_efficiency: Weight for efficiency reward
             use_ftca: Whether to use token-level credit assignment
+            openai_api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
+            openai_base_url: OpenAI base URL (optional, for compatible APIs)
+            llm_model: LLM model name for task parsing
         """
         self.w_format = w_format
         self.w_action = w_action
@@ -175,22 +186,22 @@ class HierarchicalPRM:
         self.w_task = w_task
         self.w_efficiency = w_efficiency
         self.use_ftca = use_ftca
+        self.llm_model = llm_model
+
+        # Initialize OpenAI client
+        api_key = openai_api_key or os.getenv("OPENAI_API_KEY")
+        if api_key:
+            client_kwargs = {"api_key": api_key}
+            if openai_base_url:
+                client_kwargs["base_url"] = openai_base_url
+            self.llm_client = OpenAI(**client_kwargs)
+        else:
+            self.llm_client = None
+            logger.warning("No OpenAI API key provided, task parsing will return empty results")
 
         self.state_machine = ActionStateMachine()
         self.valid_actions = {"Navigate", "Pick", "Place"}
         self.ftca = TokenLevelRewardAssigner()
-
-        # 任务关键词映射 - 用于更好的R_task计算
-        self.action_verbs = {
-            'put': ['Pick', 'Place'],
-            'place': ['Pick', 'Place'],
-            'move': ['Pick', 'Place'],
-            'take': ['Pick'],
-            'grab': ['Pick'],
-            'get': ['Pick'],
-            'bring': ['Pick', 'Navigate', 'Place'],
-            'carry': ['Pick', 'Navigate', 'Place'],
-        }
 
     def parse_plan(self, plan_text: str) -> Tuple[bool, List[str]]:
         """
@@ -223,63 +234,66 @@ class HierarchicalPRM:
 
     def extract_task_info(self, task: str) -> Dict[str, List[str]]:
         """
-        从任务描述中提取结构化信息
+        从任务描述中提取结构化信息（使用 LLM）
 
         Args:
             task: 任务描述，如 "Put the apple on the table into the basket"
 
         Returns:
-            Dict with 'objects', 'locations', 'action_verb'
+            Dict with 'objects', 'source', 'destination', 'action_verb'
         """
-        task_lower = task.lower()
-        words = task_lower.split()
+        if not self.llm_client:
+            logger.warning("No LLM client available, returning empty result")
+            return {'objects': [], 'source': [], 'destination': [], 'action_verb': None}
 
-        result = {
-            'objects': [],      # 要操作的物体
-            'source': [],       # 源位置
-            'destination': [],  # 目标位置
-            'action_verb': None
-        }
+        prompt = f"""Extract structured information from this embodied AI task description.
 
-        # 提取动作动词
-        for word in words:
-            word_clean = word.strip('.,!?')
-            if word_clean in self.action_verbs:
-                result['action_verb'] = word_clean
-                break
+Task: "{task}"
 
-        # 使用模式匹配提取实体
-        # Pattern 1: "Put/Move the X on/from the Y into/to the Z"
-        pattern1 = r'(?:put|move|place|take)\s+(?:the\s+)?(\w+)\s+(?:on|from|at)\s+(?:the\s+)?(\w+)\s+(?:into|to|in)\s+(?:the\s+)?(\w+)'
-        match1 = re.search(pattern1, task_lower)
-        if match1:
-            result['objects'].append(match1.group(1))
-            result['source'].append(match1.group(2))
-            result['destination'].append(match1.group(3))
-            return result
+Extract and return a JSON object with:
+- "objects": list of objects to manipulate (e.g., ["apple", "book"])
+- "source": list of source locations where objects are located (e.g., ["table", "shelf"])
+- "destination": list of target locations where objects should be placed (e.g., ["basket", "drawer"])
+- "action_verb": the main action verb (e.g., "put", "move", "take", "bring")
 
-        # Pattern 2: "Put/Move the X into/to the Y"
-        pattern2 = r'(?:put|move|place|take)\s+(?:the\s+)?(\w+)\s+(?:into|to|in|on)\s+(?:the\s+)?(\w+)'
-        match2 = re.search(pattern2, task_lower)
-        if match2:
-            result['objects'].append(match2.group(1))
-            result['destination'].append(match2.group(2))
-            return result
+Rules:
+1. Only include explicitly mentioned items
+2. Use lowercase for all values
+3. If not mentioned, use empty list []
+4. For action_verb, use null if not clear
 
-        # Fallback: 提取"the X"模式
-        the_pattern = r'the\s+(\w+)'
-        matches = re.findall(the_pattern, task_lower)
-        for i, match in enumerate(matches):
-            # 过滤掉常见的非实体词
-            if match not in ['way', 'other', 'same', 'first', 'second']:
-                if i == 0:
-                    result['objects'].append(match)
-                elif i == 1:
-                    result['source'].append(match)
-                else:
-                    result['destination'].append(match)
+Return ONLY valid JSON, no explanation."""
 
-        return result
+        try:
+            response = self.llm_client.chat.completions.create(
+                model=self.llm_model,
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that extracts structured information from task descriptions. Always respond with valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0,
+                max_tokens=200
+            )
+
+            result_text = response.choices[0].message.content.strip()
+            # 清理可能的 markdown 代码块
+            if result_text.startswith("```"):
+                result_text = result_text.split("```")[1]
+                if result_text.startswith("json"):
+                    result_text = result_text[4:]
+                result_text = result_text.strip()
+
+            result = json.loads(result_text)
+
+            return {
+                'objects': result.get('objects', []),
+                'source': result.get('source', []),
+                'destination': result.get('destination', []),
+                'action_verb': result.get('action_verb')
+            }
+        except Exception as e:
+            logger.error(f"LLM parsing failed: {e}")
+            return {'objects': [], 'source': [], 'destination': [], 'action_verb': None}
 
     def compute_format_reward(self, plan_text: str) -> float:
         """
@@ -560,62 +574,62 @@ def test_reward_model():
 
     task = "Put the apple on the table into the basket"
 
-    print("=" * 60)
-    print("Testing Hierarchical Process Reward Model (H-PRM)")
-    print("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Testing Hierarchical Process Reward Model (H-PRM)")
+    logger.info("=" * 60)
 
     # Test 1: Perfect plan
     plan1 = "Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"
     rewards1 = prm.compute_reward(plan1, task)
-    print("\nTest 1 - Perfect plan:")
-    print(f"  Plan: {plan1}")
-    print(f"  Task: {task}")
-    print(f"  Rewards: {rewards1}")
+    logger.info("\nTest 1 - Perfect plan:")
+    logger.info(f"  Plan: {plan1}")
+    logger.info(f"  Task: {task}")
+    logger.info(f"  Rewards: {rewards1}")
 
     # Test 2: Invalid action sequence (Pick before Navigate)
     plan2 = "Pick(Apple), Navigate(Table), Place(Basket)"
     rewards2 = prm.compute_reward(plan2, task)
-    print("\nTest 2 - Pick before Navigate:")
-    print(f"  Plan: {plan2}")
-    print(f"  Rewards: {rewards2}")
+    logger.info("\nTest 2 - Pick before Navigate:")
+    logger.info(f"  Plan: {plan2}")
+    logger.info(f"  Rewards: {rewards2}")
 
     # Test 3: Unknown action
     plan3 = "Navigate(Table), Grab(Apple), Navigate(Basket), Place(Basket)"
     rewards3 = prm.compute_reward(plan3, task)
-    print("\nTest 3 - Unknown action (Grab):")
-    print(f"  Plan: {plan3}")
-    print(f"  Rewards: {rewards3}")
+    logger.info("\nTest 3 - Unknown action (Grab):")
+    logger.info(f"  Plan: {plan3}")
+    logger.info(f"  Rewards: {rewards3}")
 
     # Test 4: Wrong format
     plan4 = "Navigate Table, Pick Apple"
     rewards4 = prm.compute_reward(plan4, task)
-    print("\nTest 4 - Wrong format (missing parentheses):")
-    print(f"  Plan: {plan4}")
-    print(f"  Rewards: {rewards4}")
+    logger.info("\nTest 4 - Wrong format (missing parentheses):")
+    logger.info(f"  Plan: {plan4}")
+    logger.info(f"  Rewards: {rewards4}")
 
     # Test 5: Task mismatch
     plan5 = "Navigate(Chair), Pick(Book), Navigate(Shelf), Place(Shelf)"
     rewards5 = prm.compute_reward(plan5, task)
-    print("\nTest 5 - Task mismatch (different objects):")
-    print(f"  Plan: {plan5}")
-    print(f"  Rewards: {rewards5}")
+    logger.info("\nTest 5 - Task mismatch (different objects):")
+    logger.info(f"  Plan: {plan5}")
+    logger.info(f"  Rewards: {rewards5}")
 
     # Test 6: Inefficient plan (too many steps)
     plan6 = "Navigate(Table), Navigate(Table), Pick(Apple), Navigate(Basket), Navigate(Basket), Place(Basket)"
     rewards6 = prm.compute_reward(plan6, task)
-    print("\nTest 6 - Inefficient plan (redundant navigates):")
-    print(f"  Plan: {plan6}")
-    print(f"  Rewards: {rewards6}")
+    logger.info("\nTest 6 - Inefficient plan (redundant navigates):")
+    logger.info(f"  Plan: {plan6}")
+    logger.info(f"  Rewards: {rewards6}")
 
     # Test 7: Token-level rewards (FTCA)
-    print("\n" + "=" * 60)
-    print("Testing FTCA (Token-level Credit Assignment)")
-    print("=" * 60)
+    logger.info("\n" + "=" * 60)
+    logger.info("Testing FTCA (Token-level Credit Assignment)")
+    logger.info("=" * 60)
     token_rewards = prm.compute_token_level_rewards(plan1, task)
-    print(f"\nPlan: {plan1}")
-    print("Token-level rewards:")
+    logger.info(f"\nPlan: {plan1}")
+    logger.info("Token-level rewards:")
     for token, reward in token_rewards:
-        print(f"  '{token}': {reward:.4f}")
+        logger.info(f"  '{token}': {reward:.4f}")
 
 
 if __name__ == "__main__":
