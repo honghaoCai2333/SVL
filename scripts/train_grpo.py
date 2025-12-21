@@ -11,6 +11,9 @@ GRPO核心思想：
 
 Usage:
     python scripts/train_grpo.py --config configs/grpo_config.yaml
+
+    # 多卡训练 (DeepSpeed)
+    accelerate launch --config_file configs/accelerate_config.yaml scripts/train_grpo.py --config configs/grpo_config.yaml
 """
 
 import sys
@@ -34,6 +37,8 @@ import json
 import numpy as np
 from typing import List, Dict, Tuple
 import wandb
+from accelerate import Accelerator
+from accelerate.utils import DeepSpeedPlugin
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -57,6 +62,42 @@ class GRPOTrainerForVLM:
         self.config = config
         self.prompt_template = PromptTemplate()
 
+        # 初始化 Accelerator (支持 DeepSpeed)
+        # 有两种方式配置 DeepSpeed:
+        # 1. 通过 accelerate launch --config_file (推荐用于多卡)
+        # 2. 通过 yaml 配置文件中的 deepspeed 字段
+        deepspeed_config = config['training'].get('deepspeed', None)
+
+        # 先创建一个基础 Accelerator 检查是否已经通过 accelerate launch 配置了 DeepSpeed
+        test_accelerator = Accelerator()
+        already_using_deepspeed = test_accelerator.state.deepspeed_plugin is not None
+        del test_accelerator
+
+        if already_using_deepspeed:
+            # 使用 accelerate launch 配置的 DeepSpeed
+            logger.info("Using DeepSpeed from accelerate config")
+            self.accelerator = Accelerator(
+                mixed_precision="bf16" if config['training'].get('bf16', True) else "fp16"
+            )
+        elif deepspeed_config:
+            # 使用 yaml 配置的 DeepSpeed
+            logger.info(f"Using DeepSpeed from config: {deepspeed_config}")
+            deepspeed_plugin = DeepSpeedPlugin(hf_ds_config=deepspeed_config)
+            self.accelerator = Accelerator(
+                mixed_precision="bf16" if config['training'].get('bf16', True) else "fp16",
+                deepspeed_plugin=deepspeed_plugin
+            )
+        else:
+            # 不使用 DeepSpeed
+            logger.info("Not using DeepSpeed")
+            self.accelerator = Accelerator(
+                mixed_precision="bf16" if config['training'].get('bf16', True) else "fp16"
+            )
+
+        self.device = self.accelerator.device
+        logger.info(f"Using device: {self.device}")
+        logger.info(f"Distributed training: {self.accelerator.num_processes} processes")
+
         # 初始化奖励模型
         self.reward_model = HierarchicalPRM(
             w_format=config['reward']['w_format'],
@@ -66,10 +107,6 @@ class GRPOTrainerForVLM:
             w_efficiency=config['reward'].get('w_efficiency', 0.15),
             use_ftca=config['reward'].get('use_ftca', True)
         )
-
-        # Setup device
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        logger.info(f"Using device: {self.device}")
 
         # Load models
         self.load_models()
@@ -93,11 +130,20 @@ class GRPOTrainerForVLM:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
+        # 检测是否使用 DeepSpeed（通过 accelerator 或 yaml 配置）
+        # DeepSpeed/Accelerate 会自己处理设备分配，不能用 device_map="auto"
+        use_distributed = (
+            self.accelerator.state.deepspeed_plugin is not None or
+            self.accelerator.num_processes > 1
+        )
+        device_map = None if use_distributed else "auto"
+        logger.info(f"Using device_map: {device_map}")
+
         # Load policy model (trainable)
         self.policy_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             base_model_name,
             torch_dtype=torch.bfloat16 if self.config['training'].get('bf16', True) else torch.float16,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True
         )
         self.policy_model = PeftModel.from_pretrained(
@@ -117,7 +163,7 @@ class GRPOTrainerForVLM:
         self.ref_model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             base_model_name,
             torch_dtype=torch.bfloat16 if self.config['training'].get('bf16', True) else torch.float16,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True
         )
         self.ref_model = PeftModel.from_pretrained(
@@ -126,6 +172,11 @@ class GRPOTrainerForVLM:
             is_trainable=False
         )
         self.ref_model.eval()
+
+        # 如果使用分布式训练，需要手动将 ref_model 移到 GPU
+        # ref_model 不需要 accelerator.prepare()，因为它是冻结的
+        if use_distributed:
+            self.ref_model = self.ref_model.to(self.device)
 
         # Print trainable parameters
         trainable_params = sum(p.numel() for p in self.policy_model.parameters() if p.requires_grad)
@@ -485,8 +536,13 @@ class GRPOTrainerForVLM:
             num_training_steps=num_training_steps
         )
 
-        # Initialize wandb if configured
-        if 'wandb' in self.config['training'].get('report_to', []):
+        # 使用 Accelerator 准备模型、优化器、数据加载器
+        self.policy_model, self.optimizer, self.train_dataloader, self.scheduler = self.accelerator.prepare(
+            self.policy_model, self.optimizer, self.train_dataloader, self.scheduler
+        )
+
+        # Initialize wandb if configured (only on main process)
+        if self.accelerator.is_main_process and 'wandb' in self.config['training'].get('report_to', []):
             wandb.init(
                 project=self.config['training'].get('wandb_project', 'harp-grpo'),
                 name=self.config['training'].get('run_name', 'grpo_qwen2.5vl'),
@@ -503,7 +559,7 @@ class GRPOTrainerForVLM:
             epoch_loss = 0.0
             epoch_reward = 0.0
 
-            progress_bar = tqdm(self.train_dataloader, desc=f"Epoch {epoch + 1}")
+            progress_bar = tqdm(self.train_dataloader, desc=f"Epoch {epoch + 1}", disable=not self.accelerator.is_main_process)
 
             for step, batch in enumerate(progress_bar):
                 # GRPO step
@@ -512,13 +568,14 @@ class GRPOTrainerForVLM:
                 # Backward
                 if isinstance(metrics['loss'], torch.Tensor) and metrics['loss'].requires_grad:
                     self.optimizer.zero_grad()
-                    metrics['loss'].backward()
+                    self.accelerator.backward(metrics['loss'])
 
                     # Gradient clipping
-                    torch.nn.utils.clip_grad_norm_(
-                        self.policy_model.parameters(),
-                        self.config['training'].get('max_grad_norm', 1.0)
-                    )
+                    if self.accelerator.sync_gradients:
+                        self.accelerator.clip_grad_norm_(
+                            self.policy_model.parameters(),
+                            self.config['training'].get('max_grad_norm', 1.0)
+                        )
 
                     self.optimizer.step()
                     self.scheduler.step()
@@ -528,14 +585,15 @@ class GRPOTrainerForVLM:
                 epoch_loss += loss_val
                 epoch_reward += metrics['mean_reward']
 
-                progress_bar.set_postfix({
-                    'loss': f"{loss_val:.4f}",
-                    'reward': f"{metrics['mean_reward']:.4f}",
-                    'kl': f"{metrics['mean_kl']:.4f}"
-                })
+                if self.accelerator.is_main_process:
+                    progress_bar.set_postfix({
+                        'loss': f"{loss_val:.4f}",
+                        'reward': f"{metrics['mean_reward']:.4f}",
+                        'kl': f"{metrics['mean_kl']:.4f}"
+                    })
 
-                # Detailed logging
-                if global_step % self.config['training']['logging_steps'] == 0:
+                # Detailed logging (only main process)
+                if self.accelerator.is_main_process and global_step % self.config['training']['logging_steps'] == 0:
                     log_dict = {
                         'train/loss': loss_val,
                         'train/reward': metrics['mean_reward'],
@@ -545,8 +603,8 @@ class GRPOTrainerForVLM:
                     if 'wandb' in self.config['training'].get('report_to', []):
                         wandb.log(log_dict, step=global_step)
 
-                # Save checkpoint
-                if global_step % self.config['training']['save_steps'] == 0 and global_step > 0:
+                # Save checkpoint (only main process)
+                if self.accelerator.is_main_process and global_step % self.config['training']['save_steps'] == 0 and global_step > 0:
                     self.save_checkpoint(global_step)
 
                 global_step += 1
@@ -554,16 +612,18 @@ class GRPOTrainerForVLM:
             # End of epoch
             avg_loss = epoch_loss / len(self.train_dataloader)
             avg_reward = epoch_reward / len(self.train_dataloader)
-            logger.info(f"Epoch {epoch + 1} - Avg Loss: {avg_loss:.4f}, Avg Reward: {avg_reward:.4f}")
+            if self.accelerator.is_main_process:
+                logger.info(f"Epoch {epoch + 1} - Avg Loss: {avg_loss:.4f}, Avg Reward: {avg_reward:.4f}")
 
             # Save best model
-            if avg_reward > best_reward:
+            if self.accelerator.is_main_process and avg_reward > best_reward:
                 best_reward = avg_reward
                 self.save_checkpoint('best')
 
         # Save final model
-        self.save_checkpoint('final')
-        logger.info("\nGRPO training complete!")
+        if self.accelerator.is_main_process:
+            self.save_checkpoint('final')
+            logger.info("\nGRPO training complete!")
 
     def save_checkpoint(self, step):
         """Save model checkpoint"""
@@ -572,8 +632,11 @@ class GRPOTrainerForVLM:
 
         logger.info(f"Saving checkpoint to {output_dir}")
 
+        # 使用 accelerator 解包模型后保存
+        unwrapped_model = self.accelerator.unwrap_model(self.policy_model)
+
         # Save LoRA weights
-        self.policy_model.save_pretrained(output_dir)
+        unwrapped_model.save_pretrained(output_dir)
         self.tokenizer.save_pretrained(output_dir)
         self.processor.save_pretrained(output_dir)
 

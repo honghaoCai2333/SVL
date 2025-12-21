@@ -32,3 +32,4 @@ training:
   bf16: true
   report_to: ["tensorboard"]
   run_name: "sft_qwen2.5vl"
+  deepspeed: "configs/ds_config_zero2.json"

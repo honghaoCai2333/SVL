@@ -57,11 +57,16 @@ class SFTTrainer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
+        # 根据是否使用 DeepSpeed 决定 device_map
+        # DeepSpeed 需要 Trainer 自己处理设备分配
+        use_deepspeed = self.config['training'].get('deepspeed', None) is not None
+        device_map = None if use_deepspeed else "auto"
+
         # Load model
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if self.config['training'].get('bf16', True) else torch.float16,
-            device_map="auto",
+            device_map=device_map,
             trust_remote_code=True
         )
 
@@ -210,6 +215,9 @@ class SFTTrainer:
         # Get bf16 setting with default
         use_bf16 = self.config['training'].get('bf16', True)
 
+        # DeepSpeed config path (optional)
+        deepspeed_config = self.config['training'].get('deepspeed', None)
+
         # Setup SFT config (TRL's SFTConfig)
         sft_config = SFTConfig(
             output_dir=self.config['training']['output_dir'],
@@ -237,6 +245,7 @@ class SFTTrainer:
             max_seq_length=self.config['training']['max_length'],
             dataset_text_field="text",  # Will be handled by formatting function
             packing=False,  # Don't pack samples for multimodal
+            deepspeed=deepspeed_config,  # DeepSpeed config
         )
 
         # Create TRL SFTTrainer
