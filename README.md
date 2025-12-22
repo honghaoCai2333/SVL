@@ -4,5 +4,6 @@
 {
 "image":<image path>,
 "task":<task>,
+"reasoning":<reasoning>,
 "plan":<plan>
 }
