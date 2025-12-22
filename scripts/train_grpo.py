@@ -102,9 +102,8 @@ class GRPOTrainerForVLM:
         self.reward_model = HierarchicalPRM(
             w_format=config['reward']['w_format'],
             w_action=config['reward']['w_action'],
-            w_transition=config['reward']['w_transition'],
             w_task=config['reward']['w_task'],
-            w_efficiency=config['reward'].get('w_efficiency', 0.15),
+            w_efficiency=config['reward'].get('w_efficiency', 0.20),
             use_ftca=config['reward'].get('use_ftca', True)
         )
 

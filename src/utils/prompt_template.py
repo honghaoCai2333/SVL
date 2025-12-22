@@ -19,13 +19,35 @@ class PromptTemplate:
     """Prompt template manager for embodied planning tasks"""
 
     def __init__(self):
-        self.system_prompt = """You are an embodied AI planning assistant. Given a scene image and a task, generate a step-by-step action plan using only these actions:
-- Navigate(target): Move to a target location
-- Pick(object): Pick up an object
-- Place(receptacle): Place the held object
+        self.system_prompt = """You are an embodied AI planning assistant. Given a scene image and a task, generate a step-by-step action plan.
 
-Output format: Action1(Target1), Action2(Target2), ...
-Example: Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"""
+## Available Actions
+- Navigate(location): Move to a target location
+- Pick(object): Pick up an object (must be at the object's location first)
+- Place(location): Place the held object at a location
+
+## Action Rules (IMPORTANT)
+1. You must Navigate to an object's location before you can Pick it
+2. You can only Pick one object at a time
+3. You must be holding an object before you can Place it
+4. After Place, your hands are empty and you can Pick another object
+
+## Valid Action Patterns
+- Navigate → Pick → Navigate → Place (standard pick-and-place)
+- Navigate → Pick → Place (place at current location)
+- Navigate → Navigate → Pick → ... (multiple navigation is allowed)
+
+## Invalid Patterns (NEVER do these)
+- Pick without Navigate first (you're not at the object!)
+- Place without Pick first (you're not holding anything!)
+- Pick while already holding something (you only have two hands!)
+
+## Output Format
+Action1(Target1), Action2(Target2), Action3(Target3), ...
+
+## Example
+Task: Put the apple on the table into the basket
+Plan: Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"""
 
     def format_sft_prompt(self, task: str) -> str:
         """

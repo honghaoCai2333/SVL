@@ -15,7 +15,6 @@ import os
 import json
 from typing import List, Dict, Tuple, Optional
 from openai import OpenAI
-from src.utils.state_machine import ActionStateMachine, Action
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -146,35 +145,34 @@ class TokenLevelRewardAssigner:
 
 class HierarchicalPRM:
     """
-    Hierarchical Process Reward Model
+    Hierarchical Process Reward Model (Simplified)
 
     Computes rewards at multiple levels:
     - R_format: Format correctness
-    - R_action: Action validity
-    - R_transition: State machine constraint satisfaction
+    - R_action: Action validity (Navigate/Pick/Place)
     - R_task: Task-plan alignment
     - R_efficiency: Plan efficiency (shorter is better)
 
-    Total reward: R_total = w1*R_format + w2*R_action + w3*R_transition + w4*R_task + w5*R_efficiency
+    Note: State machine validation is removed. The model learns constraints from prompt rules during training.
+
+    Total reward: R_total = w1*R_format + w2*R_action + w3*R_task + w4*R_efficiency
     """
 
     def __init__(self,
-                 w_format: float = 0.1,
+                 w_format: float = 0.15,
                  w_action: float = 0.25,
-                 w_transition: float = 0.25,
-                 w_task: float = 0.25,
-                 w_efficiency: float = 0.15,
+                 w_task: float = 0.40,
+                 w_efficiency: float = 0.20,
                  use_ftca: bool = True,
                  openai_api_key: str = None,
                  openai_base_url: str = None,
                  llm_model: str = "gpt-4o-mini"):
         """
         Args:
-            w_format: Weight for format reward
-            w_action: Weight for action reward
-            w_transition: Weight for transition reward
-            w_task: Weight for task reward
-            w_efficiency: Weight for efficiency reward
+            w_format: Weight for format reward (default: 0.15)
+            w_action: Weight for action validity reward (default: 0.25)
+            w_task: Weight for task reward (default: 0.40, increased from 0.25)
+            w_efficiency: Weight for efficiency reward (default: 0.20, increased from 0.15)
             use_ftca: Whether to use token-level credit assignment
             openai_api_key: OpenAI API key (defaults to OPENAI_API_KEY env var)
             openai_base_url: OpenAI base URL (optional, for compatible APIs)
@@ -182,7 +180,6 @@ class HierarchicalPRM:
         """
         self.w_format = w_format
         self.w_action = w_action
-        self.w_transition = w_transition
         self.w_task = w_task
         self.w_efficiency = w_efficiency
         self.use_ftca = use_ftca
@@ -199,7 +196,6 @@ class HierarchicalPRM:
             self.llm_client = None
             logger.warning("No OpenAI API key provided, task parsing will return empty results")
 
-        self.state_machine = ActionStateMachine()
         self.valid_actions = {"Navigate", "Pick", "Place"}
         self.ftca = TokenLevelRewardAssigner()
 
@@ -330,56 +326,33 @@ Return ONLY valid JSON, no explanation."""
 
     def compute_action_reward(self, plan_text: str) -> float:
         """
-        R_action: Reward for action validity
+        R_action: Reward for action validity (simplified)
+
+        Checks if all actions are Navigate/Pick/Place
 
         Returns:
-            +1.0: All actions are valid (Navigate/Pick/Place)
-            Scaled penalty for unknown actions
+            +1.0: All actions are valid
+            Scaled penalty for invalid actions [-1, 1]
         """
         success, actions = self.parse_plan(plan_text)
 
         if not success:
+            return -1.0
+
+        if len(actions) == 0:
             return -1.0
 
         valid_count = 0
-        total_count = len(actions)
-
-        for action in actions:
-            action_type, _ = self.state_machine.parse_action(action)
-            if action_type != Action.UNKNOWN:
-                valid_count += 1
-
-        if total_count == 0:
-            return -1.0
+        for action_str in actions:
+            # Simple parsing: extract action name
+            if '(' in action_str:
+                action_name = action_str.split('(')[0].strip()
+                if action_name in self.valid_actions:
+                    valid_count += 1
 
         # 返回有效动作的比例，范围 [-1, 1]
-        valid_ratio = valid_count / total_count
+        valid_ratio = valid_count / len(actions)
         return valid_ratio * 2 - 1  # 映射到 [-1, 1]
-
-    def compute_transition_reward(self, plan_text: str) -> float:
-        """
-        R_transition: Reward for state machine constraint satisfaction
-
-        Returns:
-            Normalized reward based on state machine validation
-            Range: [-1.0, 1.0]
-        """
-        success, actions = self.parse_plan(plan_text)
-
-        if not success:
-            return -1.0
-
-        is_valid, total_reward, transitions = self.state_machine.validate_sequence(actions)
-
-        # Normalize by number of transitions
-        num_transitions = len(actions)
-        if num_transitions == 0:
-            return -1.0
-
-        # Average reward per transition
-        avg_reward = total_reward / num_transitions
-
-        return max(-1.0, min(1.0, avg_reward))
 
     def compute_task_reward(self, plan_text: str, task: str) -> float:
         """
@@ -410,16 +383,25 @@ Return ONLY valid JSON, no explanation."""
         place_targets = []
         navigate_targets = []
 
-        for action in actions:
-            action_type, target = self.state_machine.parse_action(action)
-            if target:
-                target_lower = target.lower()
-                if action_type == Action.PICK:
-                    pick_targets.append(target_lower)
-                elif action_type == Action.PLACE:
-                    place_targets.append(target_lower)
-                elif action_type == Action.NAVIGATE:
-                    navigate_targets.append(target_lower)
+        for action_str in actions:
+            # Simple parsing: Action(Target)
+            if '(' not in action_str or ')' not in action_str:
+                continue
+
+            try:
+                action_name = action_str.split('(')[0].strip()
+                target = action_str.split('(')[1].rstrip(')').strip()
+
+                if target:
+                    target_lower = target.lower()
+                    if action_name == "Pick":
+                        pick_targets.append(target_lower)
+                    elif action_name == "Place":
+                        place_targets.append(target_lower)
+                    elif action_name == "Navigate":
+                        navigate_targets.append(target_lower)
+            except:
+                continue
 
         # 计算匹配分数
         scores = []
@@ -497,7 +479,7 @@ Return ONLY valid JSON, no explanation."""
 
     def compute_reward(self, plan_text: str, task: str, image_path: str = None) -> Dict[str, float]:
         """
-        Compute total hierarchical reward
+        Compute total hierarchical reward (simplified)
 
         Args:
             plan_text: Generated plan text
@@ -509,14 +491,12 @@ Return ONLY valid JSON, no explanation."""
         """
         r_format = self.compute_format_reward(plan_text)
         r_action = self.compute_action_reward(plan_text)
-        r_transition = self.compute_transition_reward(plan_text)
         r_task = self.compute_task_reward(plan_text, task)
         r_efficiency = self.compute_efficiency_reward(plan_text)
 
         r_total = (
             self.w_format * r_format +
             self.w_action * r_action +
-            self.w_transition * r_transition +
             self.w_task * r_task +
             self.w_efficiency * r_efficiency
         )
@@ -524,7 +504,6 @@ Return ONLY valid JSON, no explanation."""
         result = {
             'r_format': r_format,
             'r_action': r_action,
-            'r_transition': r_transition,
             'r_task': r_task,
             'r_efficiency': r_efficiency,
             'r_total': r_total
