@@ -219,6 +219,7 @@ class SFTTrainer:
         deepspeed_config = self.config['training'].get('deepspeed', None)
 
         # Setup SFT config (TRL's SFTConfig)
+        # 注意：只使用 SFTConfig 明确支持的参数
         sft_config = SFTConfig(
             output_dir=self.config['training']['output_dir'],
             num_train_epochs=self.config['training']['num_epochs'],
@@ -231,11 +232,8 @@ class SFTTrainer:
             logging_steps=self.config['training']['logging_steps'],
             save_steps=self.config['training']['save_steps'],
             eval_steps=self.config['training']['eval_steps'],
-            evaluation_strategy="steps",
-            save_strategy="steps",
-            load_best_model_at_end=True,
-            metric_for_best_model="eval_loss",
-            greater_is_better=False,
+            # Note: eval_strategy, save_strategy 等参数在某些 TRL 版本中可能不支持
+            # 如果报错，请移除下面的可选参数
             bf16=use_bf16,
             fp16=not use_bf16,
             dataloader_num_workers=self.config['training'].get('num_workers', 4),
