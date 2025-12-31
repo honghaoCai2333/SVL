@@ -207,6 +207,101 @@ class RLDataset(HARPDataset):
         return result
 
 
+class TrajectoryDataset(HARPDataset):
+    """
+    轨迹数据集 - 逐步预测模式
+
+    每个样本是轨迹中的一个step，模型需要根据当前图像、任务和历史动作
+    来预测下一个动作（包含思考过程）
+
+    数据格式:
+    {
+        "image": "path/to/step_image.png",
+        "task": "First, place Apple on Fridge, then place Fork on SinkBasin.",
+        "action_history": ["Navigate(CounterTop)", "Pick(Apple)"],
+        "thinking": "I observe... Reflecting on the task...",
+        "next_action": "Navigate(Fridge)",
+        "scene": "FloorPlan4",
+        "step": 2
+    }
+
+    Returns:
+        - image: PIL Image of current view
+        - input_text: formatted input with task and action history
+        - target_text: thinking + next_action
+        - step: step number in trajectory
+        - scene: scene identifier
+    """
+
+    def __init__(self,
+                 jsonl_path: Path,
+                 image_processor=None,
+                 tokenizer=None,
+                 max_length: int = 1024,
+                 include_thinking: bool = True):
+        """
+        Args:
+            jsonl_path: Path to JSONL file with trajectory data
+            image_processor: Image processor for the VLM
+            tokenizer: Tokenizer for the VLM
+            max_length: Maximum sequence length
+            include_thinking: Whether to include thinking in target (for CoT training)
+        """
+        super().__init__(jsonl_path, image_processor, tokenizer, max_length)
+        self.include_thinking = include_thinking
+        logger.info(f"Loaded TrajectoryDataset with {len(self.data)} steps, include_thinking={include_thinking}")
+
+    def format_action_history(self, action_history: List[str]) -> str:
+        """Format action history list to string"""
+        if not action_history:
+            return "None"
+        return " -> ".join(action_history)
+
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        item = self.data[idx]
+
+        # Load image
+        image = self.load_image(item['image'])
+
+        # Extract fields
+        task = item['task']
+        action_history = item.get('action_history', [])
+        thinking = item.get('thinking', '')
+        next_action = item['next_action']
+        step = item.get('step', 0)
+        scene = item.get('scene', 'unknown')
+
+        # Format input text
+        history_str = self.format_action_history(action_history)
+        if step == 0:
+            input_text = f"Task: {task}\n\nThis is the initial state. What action should I take first?"
+        else:
+            input_text = f"Task: {task}\n\nCompleted actions: {history_str}\n\nBased on the current view, what action should I take next?"
+
+        # Format target text
+        if self.include_thinking:
+            target_text = f"Thinking: {thinking}\n\nNext Action: {next_action}"
+        else:
+            target_text = next_action
+
+        result = {
+            'image': image,
+            'input_text': input_text,
+            'target_text': target_text,
+            'step': step,
+            'scene': scene,
+            'image_path': item['image'],
+            'action_history': action_history,
+            'next_action': next_action
+        }
+
+        # Process with image processor if provided
+        if self.image_processor is not None:
+            result['pixel_values'] = self.image_processor(image, return_tensors='pt').pixel_values[0]
+
+        return result
+
+
 if __name__ == "__main__":
     # Test dataset loading
     logger.info("Testing SFTDataset...")
@@ -218,3 +313,49 @@ if __name__ == "__main__":
         logger.info(f"Sample keys: {sample.keys()}")
         logger.info(f"Input: {sample['input_text']}")
         logger.info(f"Target: {sample['target_text']}")
+
+    # Test TrajectoryDataset
+    logger.info("\n" + "="*50)
+    logger.info("Testing TrajectoryDataset...")
+
+    # Create test data
+    test_trajectory_data = [
+        {
+            "image": "test_image_0.png",
+            "task": "Place Apple on Fridge",
+            "action_history": [],
+            "thinking": "I see a kitchen with a countertop and fridge. The Apple is on the countertop.",
+            "next_action": "Navigate(CounterTop)",
+            "scene": "FloorPlan4",
+            "step": 0
+        },
+        {
+            "image": "test_image_1.png",
+            "task": "Place Apple on Fridge",
+            "action_history": ["Navigate(CounterTop)"],
+            "thinking": "I am now at the countertop and can see the Apple. I should pick it up.",
+            "next_action": "Pick(Apple)",
+            "scene": "FloorPlan4",
+            "step": 1
+        }
+    ]
+
+    # Write test data
+    test_jsonl_path = Path("/tmp/test_trajectory.jsonl")
+    with open(test_jsonl_path, 'w') as f:
+        for item in test_trajectory_data:
+            import json
+            f.write(json.dumps(item) + '\n')
+
+    # Load and test
+    traj_dataset = TrajectoryDataset(jsonl_path=test_jsonl_path, include_thinking=True)
+    logger.info(f"Loaded {len(traj_dataset)} trajectory steps")
+
+    for i in range(len(traj_dataset)):
+        sample = traj_dataset[i]
+        logger.info(f"\n--- Step {sample['step']} ---")
+        logger.info(f"Input: {sample['input_text'][:100]}...")
+        logger.info(f"Target: {sample['target_text'][:100]}...")
+
+    # Clean up
+    test_jsonl_path.unlink()

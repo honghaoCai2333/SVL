@@ -1,0 +1,38 @@
+# Trajectory-based SFT Training Configuration
+# Step-by-step action prediction with Chain-of-Thought reasoning
+
+model:
+  name: "Qwen/Qwen2.5-VL-7B-Instruct"  # 或 3B/72B 变体
+  freeze_vision_encoder: true
+  use_lora: true
+
+lora:
+  rank: 64
+  alpha: 128
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  dropout: 0.05
+
+data:
+  train_path: "data/trajectory/trajectory_train.jsonl"
+  val_path: "data/trajectory/trajectory_val.jsonl"
+  include_thinking: true  # 是否包含 thinking 作为训练目标
+
+training:
+  output_dir: "outputs/sft_trajectory"
+  num_epochs: 3
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 8
+  learning_rate: 2.0e-5
+  weight_decay: 0.01
+  warmup_steps: 100
+  # 轨迹模式需要更长的 max_length (thinking 可能较长)
+  max_length: 1024
+  logging_steps: 10
+  save_steps: 500
+  eval_steps: 500
+  num_workers: 4
+  bf16: true
+  report_to: ["tensorboard"]
+  run_name: "sft_trajectory_qwen2.5vl"
+  deepspeed: "configs/ds_config_zero2.json"

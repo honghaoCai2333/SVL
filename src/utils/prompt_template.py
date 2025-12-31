@@ -19,6 +19,7 @@ class PromptTemplate:
     """Prompt template manager for embodied planning tasks"""
 
     def __init__(self):
+        # 原有的完整计划生成 system prompt
         self.system_prompt = """You are an embodied AI planning assistant. Given a scene image and a task, generate a step-by-step action plan.
 
 ## Available Actions
@@ -49,6 +50,48 @@ Action1(Target1), Action2(Target2), Action3(Target3), ...
 Task: Put the apple on the table into the basket
 Plan: Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"""
 
+        # 轨迹模式：逐步决策的 system prompt
+        self.system_prompt_trajectory = """You are an embodied AI agent that makes decisions step by step in a household environment.
+
+## Available Actions
+- Navigate(location): Move to a target location (e.g., Navigate(CounterTop), Navigate(Fridge))
+- Pick(object): Pick up an object (must be at the object's location first)
+- Place(receptacle): Place the held object on/in a receptacle
+- Open(object): Open a container or appliance (e.g., Open(Fridge), Open(Cabinet))
+- Close(object): Close a container or appliance
+- TaskCompleted(): Indicate the task is finished
+
+## Action Rules
+1. You must Navigate to an object's location before you can Pick it
+2. You can only hold one object at a time
+3. You must be holding an object before you can Place it
+4. Some receptacles (Fridge, Cabinet) need to be Open before Place
+5. Call TaskCompleted() when all subtasks are done
+
+## Your Task
+Given:
+- An image of your current view
+- The task description
+- Actions you have already completed
+
+You must:
+1. Carefully observe the current scene in the image
+2. Think about what you see and what the task requires
+3. Decide the single next action to take
+
+## Output Format
+Thinking: [Describe what you observe and your reasoning]
+
+Next Action: [Single action to execute]
+
+## Example
+Task: Place the apple on the table
+Completed actions: Navigate(CounterTop) -> Pick(Apple)
+
+Thinking: I have picked up the Apple from the CounterTop. Now I can see the Table in my view. To complete the task, I need to navigate to the Table and place the Apple there.
+
+Next Action: Navigate(Table)"""
+
     def format_sft_prompt(self, task: str) -> str:
         """
         Format prompt for SFT training
@@ -60,6 +103,93 @@ Plan: Navigate(Table), Pick(Apple), Navigate(Basket), Place(Basket)"""
             Formatted prompt string
         """
         return f"Task: {task}\nPlan:"
+
+    def format_trajectory_prompt(self, task: str, action_history: List[str], step: int = 0) -> str:
+        """
+        Format prompt for trajectory-based step-by-step prediction
+
+        Args:
+            task: Task description
+            action_history: List of completed actions
+            step: Current step number
+
+        Returns:
+            Formatted prompt string
+        """
+        if step == 0 or not action_history:
+            return f"Task: {task}\n\nThis is the initial state. What action should I take first?"
+        else:
+            history_str = " -> ".join(action_history)
+            return f"Task: {task}\n\nCompleted actions: {history_str}\n\nBased on the current view, what action should I take next?"
+
+    def format_messages_for_trajectory(self, task: str, action_history: List[str] = None, step: int = 0) -> List[Dict[str, Any]]:
+        """
+        Format messages in Qwen2.5-VL chat format for trajectory mode
+
+        Args:
+            task: Task description
+            action_history: List of completed actions
+            step: Current step number
+
+        Returns:
+            List of message dicts
+        """
+        input_text = self.format_trajectory_prompt(task, action_history or [], step)
+
+        messages = [
+            {
+                "role": "system",
+                "content": self.system_prompt_trajectory
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": input_text}
+                ]
+            }
+        ]
+        return messages
+
+    def parse_trajectory_response(self, response: str) -> Dict[str, str]:
+        """
+        Parse model response from trajectory mode
+
+        Args:
+            response: Model output with Thinking and Next Action
+
+        Returns:
+            Dict with 'thinking' and 'next_action'
+        """
+        thinking = ""
+        next_action = ""
+
+        # Try to parse structured format
+        if "Thinking:" in response:
+            parts = response.split("Next Action:")
+            if len(parts) == 2:
+                thinking = parts[0].replace("Thinking:", "").strip()
+                next_action = parts[1].strip()
+            else:
+                # Fallback: try to extract thinking only
+                thinking = response.split("Thinking:")[-1].strip()
+
+        # If no structured format, treat whole response as action
+        if not next_action:
+            # Try to find action pattern like Navigate(X), Pick(Y), etc.
+            import re
+            action_pattern = r'(Navigate|Pick|Place|Open|Close|TaskCompleted)\([^)]*\)'
+            matches = re.findall(action_pattern, response)
+            if matches:
+                # Find the full action string
+                full_matches = re.findall(r'(Navigate|Pick|Place|Open|Close|TaskCompleted)\([^)]*\)', response)
+                if full_matches:
+                    next_action = full_matches[-1] if isinstance(full_matches[-1], str) else full_matches[-1][0]
+
+        return {
+            "thinking": thinking,
+            "next_action": next_action
+        }
 
     def format_messages_for_qwen(self, task: str, image_path: str = None) -> List[Dict[str, Any]]:
         """
