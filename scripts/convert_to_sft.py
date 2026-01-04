@@ -1,32 +1,59 @@
 """
 将模仿学习格式的数据转换为SFT训练格式
 
+支持两种数据源格式：
+1. 文件夹格式 (navigate1open1pickup0): 每个任务一个文件夹+JSON
+2. 大JSON格式 (train_multiturn_9390.json): 一个JSON文件包含所有任务
+
 支持两种转换方式：
 1. One-shot Planning: 一次性生成完整规划
 2. Step-by-step: 逐步决策，每步一个样本
 
 Usage:
+    # 文件夹格式
     python scripts/convert_to_sft.py \
         --input_dir /path/to/data \
         --output_path data/sft_train.jsonl \
-        --mode oneshot  # or 'stepwise'
+        --mode stepwise
+    
+    # 大JSON格式
+    python scripts/convert_to_sft.py \
+        --input_json /path/to/train_multiturn_9390.json \
+        --image_base_dir /path/to/embodied_reasoner \
+        --output_path data/sft_train.jsonl \
+        --mode stepwise
 """
 
 import json
 import os
+import re
 import argparse
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional, Tuple
 from glob import glob
 
 
 def extract_action_from_decision(text: str) -> str:
     """从 <DecisionMaking>...</DecisionMaking> 中提取动作"""
-    import re
     match = re.search(r'<DecisionMaking>(.*?)</DecisionMaking>', text)
     if match:
         return match.group(1).strip()
     return ""
+
+
+def extract_thinking_from_content(content: str) -> str:
+    """
+    从assistant的content中提取thinking部分
+    thinking是<DecisionMaking>之前的所有内容
+    """
+    # 找到DecisionMaking标签
+    match = re.search(r'<DecisionMaking>', content)
+    if match:
+        thinking = content[:match.start()].strip()
+        # 清理一些常见的结尾词
+        thinking = re.sub(r"(Okay,\s*I('ve| think|'ll).*?|Hmm.*?|So,.*?|Alright.*?)$", "", thinking, flags=re.IGNORECASE).strip()
+        return thinking
+    return content.strip()
 
 
 def normalize_action(action: str) -> str:
@@ -63,11 +90,231 @@ def normalize_action(action: str) -> str:
         return "Observe()"
     elif action == 'move forward':
         return "MoveForward()"
-    elif action == 'end':
-        return "End()"
+    elif action == 'end' or 'task' in action.lower() and any(w in action.lower() for w in ['complete', 'end', 'done', 'finish', 'conclude']):
+        return "TaskCompleted()"
+    elif action.lower() in ['end task', 'task completed', 'task complete', 'done', 'finish', 'finished', 'complete task', 'conclude task']:
+        return "TaskCompleted()"
     else:
         return action
 
+
+# ============== 大JSON格式转换 (train_multiturn_9390.json) ==============
+
+def convert_multiturn_stepwise(data: Dict[str, Any], image_base_dir: str, 
+                                copy_images: bool = False, image_output_dir: str = None) -> Tuple[List[Dict[str, Any]], set]:
+    """
+    将多轮对话格式的数据转换为stepwise SFT格式
+    
+    Args:
+        data: 单个任务数据，包含messages和images
+        image_base_dir: 图片基础目录
+        copy_images: 是否复制图片
+        image_output_dir: 图片输出目录
+    
+    Returns:
+        (samples列表, 复制的图片集合)
+    """
+    import shutil
+    
+    samples = []
+    copied_images = set()
+    
+    messages = data.get('messages', [])
+    images = data.get('images', [])
+    
+    if not messages or not images:
+        return samples, copied_images
+    
+    # 提取任务描述
+    task = ""
+    for msg in messages:
+        if msg['role'] == 'user':
+            content = msg['content']
+            # 从第一个user消息中提取Task
+            task_match = re.search(r'Task:\s*"([^"]+)"', content)
+            if task_match:
+                task = task_match.group(1)
+                break
+    
+    if not task:
+        return samples, copied_images
+    
+    # 第一步的固定thinking
+    INITIAL_THINKING = "I will carefully observe the environment, analyze the current scene and the task requirements, then make the correct action to accomplish the goal step by step."
+    
+    # 解析对话，提取动作和thinking
+    action_history = []
+    image_idx = 0  # 图片索引
+    step = 0
+    
+    for i, msg in enumerate(messages):
+        if msg['role'] == 'assistant':
+            content = msg['content']
+            
+            # 提取动作
+            action = extract_action_from_decision(content)
+            if not action:
+                continue
+            
+            normalized_action = normalize_action(action)
+            
+            # 提取thinking
+            if step == 0:
+                thinking = INITIAL_THINKING
+            else:
+                thinking = extract_thinking_from_content(content)
+            
+            # 获取对应的图片
+            if image_idx < len(images):
+                img_path = images[image_idx]
+                # 处理相对路径
+                if img_path.startswith('./'):
+                    img_path = img_path[2:]
+                # 修正路径：data/images/xxx -> data/xxx
+                if img_path.startswith('data/images/'):
+                    img_path = img_path.replace('data/images/', 'data/')
+                full_img_path = os.path.join(image_base_dir, img_path)
+                
+                # 如果需要复制图片
+                if copy_images and image_output_dir and os.path.exists(full_img_path):
+                    # 提取子文件夹名
+                    path_parts = img_path.split('/')
+                    if len(path_parts) >= 3:
+                        subfolder = path_parts[-2]  # 如 FloorPlan204_pickup_and_put_in_closerep_1_c
+                        img_filename = path_parts[-1]
+                        
+                        dst_subfolder = os.path.join(image_output_dir, subfolder)
+                        os.makedirs(dst_subfolder, exist_ok=True)
+                        dst_path = os.path.join(dst_subfolder, img_filename)
+                        
+                        if full_img_path not in copied_images:
+                            shutil.copy2(full_img_path, dst_path)
+                            copied_images.add(full_img_path)
+                        
+                        # 使用相对路径
+                        relative_img_path = os.path.join('data/images', subfolder, img_filename)
+                    else:
+                        relative_img_path = img_path
+                else:
+                    relative_img_path = full_img_path if os.path.exists(full_img_path) else img_path
+            else:
+                relative_img_path = None
+            
+            sample = {
+                "image": relative_img_path,
+                "task": task,
+                "action_history": action_history.copy(),
+                "thinking": thinking,
+                "next_action": normalized_action,
+                "step": step
+            }
+            samples.append(sample)
+            
+            # 更新历史和索引
+            action_history.append(normalized_action)
+            image_idx += 1
+            step += 1
+    
+    # 检查是否需要添加TaskCompleted
+    if samples and samples[-1]['next_action'] != 'TaskCompleted()':
+        # 添加一个结束样本
+        if image_idx < len(images):
+            img_path = images[image_idx]
+            if img_path.startswith('./'):
+                img_path = img_path[2:]
+            # 修正路径：data/images/xxx -> data/xxx
+            if img_path.startswith('data/images/'):
+                img_path = img_path.replace('data/images/', 'data/')
+            full_img_path = os.path.join(image_base_dir, img_path)
+            
+            if copy_images and image_output_dir and os.path.exists(full_img_path):
+                path_parts = img_path.split('/')
+                if len(path_parts) >= 3:
+                    subfolder = path_parts[-2]
+                    img_filename = path_parts[-1]
+                    dst_subfolder = os.path.join(image_output_dir, subfolder)
+                    os.makedirs(dst_subfolder, exist_ok=True)
+                    dst_path = os.path.join(dst_subfolder, img_filename)
+                    if full_img_path not in copied_images:
+                        shutil.copy2(full_img_path, dst_path)
+                        copied_images.add(full_img_path)
+                    relative_img_path = os.path.join('data/images', subfolder, img_filename)
+                else:
+                    relative_img_path = img_path
+            else:
+                relative_img_path = full_img_path if os.path.exists(full_img_path) else None
+        else:
+            relative_img_path = samples[-1]['image'] if samples else None
+        
+        completion_sample = {
+            "image": relative_img_path,
+            "task": task,
+            "action_history": action_history.copy(),
+            "thinking": "I have successfully completed all the required subtasks. The task has been accomplished as instructed.",
+            "next_action": "TaskCompleted()",
+            "step": step
+        }
+        samples.append(completion_sample)
+    
+    return samples, copied_images
+
+
+def process_multiturn_json(input_json: str, output_path: str, image_base_dir: str,
+                           copy_images: bool = False, image_output_dir: str = None):
+    """
+    处理大JSON格式的数据文件 (train_multiturn_9390.json)
+    
+    Args:
+        input_json: 输入的JSON文件路径
+        output_path: 输出的JSONL文件路径
+        image_base_dir: 图片基础目录
+        copy_images: 是否复制图片
+        image_output_dir: 图片输出目录
+    """
+    print(f"Loading {input_json}...")
+    with open(input_json, 'r', encoding='utf-8') as f:
+        data_list = json.load(f)
+    
+    print(f"Found {len(data_list)} tasks")
+    
+    if copy_images and image_output_dir:
+        os.makedirs(image_output_dir, exist_ok=True)
+        print(f"Images will be copied to: {image_output_dir}")
+    
+    all_samples = []
+    all_copied_images = set()
+    
+    for i, data in enumerate(data_list):
+        if (i + 1) % 1000 == 0:
+            print(f"Processing {i + 1}/{len(data_list)}...")
+        
+        try:
+            samples, copied = convert_multiturn_stepwise(
+                data, image_base_dir, copy_images, image_output_dir
+            )
+            all_samples.extend(samples)
+            all_copied_images.update(copied)
+        except Exception as e:
+            print(f"Error processing task {i}: {e}")
+            continue
+    
+    # 保存到JSONL文件
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for sample in all_samples:
+            f.write(json.dumps(sample, ensure_ascii=False) + '\n')
+    
+    print(f"Converted {len(all_samples)} samples to {output_path}")
+    if copy_images:
+        print(f"Copied {len(all_copied_images)} unique images")
+    
+    return all_samples
+
+
+# ============== 文件夹格式转换 (navigate1open1pickup0) ==============
 
 def convert_oneshot(data: Dict[str, Any], base_dir: str) -> Dict[str, Any]:
     """
@@ -463,13 +710,25 @@ def process_directory(input_dir: str, output_path: str, mode: str = 'oneshot',
 
 def main():
     parser = argparse.ArgumentParser(description='Convert imitation learning data to SFT format')
-    parser.add_argument('--input_dir', type=str, required=True,
-                        help='Input directory containing JSON files')
+    
+    # 输入源（二选一）
+    parser.add_argument('--input_dir', type=str, default=None,
+                        help='Input directory containing JSON files (folder format)')
+    parser.add_argument('--input_json', type=str, default=None,
+                        help='Input JSON file path (multiturn format like train_multiturn_9390.json)')
+    parser.add_argument('--image_base_dir', type=str, default=None,
+                        help='Base directory for images (required for --input_json)')
+    
+    # 输出
     parser.add_argument('--output_path', type=str, required=True,
                         help='Output JSONL file path')
+    
+    # 模式
     parser.add_argument('--mode', type=str, choices=['oneshot', 'stepwise'],
-                        default='oneshot',
+                        default='stepwise',
                         help='Conversion mode: oneshot (one-shot planning) or stepwise (step-by-step)')
+    
+    # 图片处理
     parser.add_argument('--copy_images', action='store_true',
                         help='Copy images to project directory')
     parser.add_argument('--image_output_dir', type=str, default='data/images',
@@ -477,8 +736,31 @@ def main():
     
     args = parser.parse_args()
     
-    process_directory(args.input_dir, args.output_path, args.mode,
-                      args.copy_images, args.image_output_dir)
+    # 验证输入
+    if args.input_json:
+        # 使用大JSON格式
+        if not args.image_base_dir:
+            # 默认使用JSON文件所在目录
+            args.image_base_dir = os.path.dirname(args.input_json)
+        
+        process_multiturn_json(
+            args.input_json,
+            args.output_path,
+            args.image_base_dir,
+            args.copy_images,
+            args.image_output_dir
+        )
+    elif args.input_dir:
+        # 使用文件夹格式
+        process_directory(
+            args.input_dir,
+            args.output_path,
+            args.mode,
+            args.copy_images,
+            args.image_output_dir
+        )
+    else:
+        parser.error("Either --input_dir or --input_json is required")
 
 
 if __name__ == '__main__':
