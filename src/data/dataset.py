@@ -19,7 +19,6 @@ from src.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
-
 class HARPDataset(Dataset):
     """Base dataset for HARP training"""
 
@@ -57,10 +56,16 @@ class SFTDataset(HARPDataset):
     """
     Supervised Fine-Tuning Dataset
 
+    支持两种数据格式:
+    1. Trajectory格式（逐步）:
+       {"image": "...", "task": "...", "action_history": [...], "next_action": "..."}
+    2. Complete Plan格式（完整计划）:
+       {"image": "...", "task": "...", "plan": [...]}
+
     Returns:
         - image: processed image tensor
-        - input_text: "Task: {task}"
-        - target_text: "{plan}"
+        - input_text: "Task: {task}\nHistory: {history}" or "Task: {task}"
+        - target_text: "{next_action}" or "{plan}"
     """
 
     def __init__(self,
@@ -70,34 +75,57 @@ class SFTDataset(HARPDataset):
                  max_length: int = 512):
         super().__init__(jsonl_path, image_processor, tokenizer, max_length)
 
+        # 自动检测数据格式
+        if len(self.data) > 0:
+            first_item = self.data[0]
+            if 'next_action' in first_item and 'action_history' in first_item:
+                self.mode = 'trajectory'
+                logger.info(f"检测到Trajectory格式数据 (逐步预测模式)")
+            elif 'plan' in first_item:
+                self.mode = 'complete_plan'
+                logger.info(f"检测到Complete Plan格式数据 (完整规划模式)")
+            else:
+                raise ValueError(f"未知的数据格式: {first_item.keys()}")
+
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         item = self.data[idx]
 
         # Load image
         image = self.load_image(item['image'])
-
-        # Format text
         task = item['task']
-        plan = self.format_plan(item['plan'])
 
-        # Prepare input
-        input_text = f"Task: {task}"
-        target_text = plan
+        # 根据数据格式构建输入输出
+        if self.mode == 'trajectory':
+            # Trajectory格式: (image, task, history) -> next_action
+            action_history = item.get('action_history', [])
+            next_action = item['next_action']
+
+            # 格式化history
+            if action_history:
+                history_str = " -> ".join(action_history)
+                input_text = f"Task: {task}\nCompleted actions: {history_str}\n\nBased on the current view, what action should I take next?"
+            else:
+                input_text = f"Task: {task}\n\nThis is the initial state. What action should I take first?"
+
+            target_text = next_action
+
+        else:  # complete_plan
+            # Complete Plan格式: (image, task) -> plan
+            plan = self.format_plan(item['plan'])
+            input_text = f"Task: {task}"
+            target_text = plan
 
         result = {
             'image': image,
             'input_text': input_text,
             'target_text': target_text,
-            'image_path': item['image']
+            'image_path': item['image'],
+            'task': task
         }
 
         # Process with tokenizer if provided
         if self.image_processor is not None:
             result['pixel_values'] = self.image_processor(image, return_tensors='pt').pixel_values[0]
-
-        if self.tokenizer is not None:
-            # For Qwen2-VL, we'll handle tokenization in the collator
-            pass
 
         return result
 
@@ -315,7 +343,7 @@ if __name__ == "__main__":
         logger.info(f"Target: {sample['target_text']}")
 
     # Test TrajectoryDataset
-    logger.info("\n" + "="*50)
+    logger.info("\n" + "=" * 50)
     logger.info("Testing TrajectoryDataset...")
 
     # Create test data
@@ -345,6 +373,7 @@ if __name__ == "__main__":
     with open(test_jsonl_path, 'w') as f:
         for item in test_trajectory_data:
             import json
+
             f.write(json.dumps(item) + '\n')
 
     # Load and test
