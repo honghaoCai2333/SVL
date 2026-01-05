@@ -2,34 +2,36 @@
 # Supervised Fine-Tuning on Qwen2.5-VL
 
 model:
-  name: "Qwen/Qwen2.5-VL-7B-Instruct"  # 或 3B/72B 变体
-  freeze_vision_encoder: true
-  use_lora: true
+name: "/mnt/tidal-alsh01/dataset/redaigc/caihonghao/SVL/model/qwen2.5-vl-7b-instruction"  # 本地模型路径
+freeze_vision_encoder: true
+use_lora: true
 
 lora:
-  rank: 64
-  alpha: 128
-  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
-  dropout: 0.05
+rank: 64
+alpha: 128
+target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+dropout: 0.05
 
 data:
-  train_path: "data/sft_train.jsonl"
-  val_path: "data/sft_val.jsonl"
+train_path: "data/sft_train.jsonl"
+val_path: "data/sft_val.jsonl"
 
 training:
-  output_dir: "outputs/sft"
-  num_epochs: 3
-  per_device_train_batch_size: 2
-  per_device_eval_batch_size: 2
-  gradient_accumulation_steps: 8
-  learning_rate: 2.0e-5
-  weight_decay: 0.01
-  warmup_steps: 100
-  max_length: 512
-  logging_steps: 10
-  save_steps: 500
-  eval_steps: 500
-  bf16: true
-  report_to: ["tensorboard"]
-  run_name: "sft_qwen2.5vl"
-  deepspeed: "configs/ds_config_zero2.json"
+output_dir: "outputs/sft"
+num_epochs: 3
+per_device_train_batch_size: 1  # 减小到1避免OOM
+per_device_eval_batch_size: 1
+gradient_accumulation_steps: 16  # 增加accumulation保持有效batch size
+learning_rate: 2.0e-5
+weight_decay: 0.01
+warmup_steps: 5  # 减小warmup（因为总共只有9步）
+max_length: 2048
+logging_steps: 1  # 每步都记录，确保有完整曲线
+save_steps: 5  # 每5步保存一次
+eval_steps: 5  # 每5步评估一次
+bf16: true
+gradient_checkpointing: true  # 启用梯度检查点，节省显存
+report_to: ["wandb"]  # 使用 wandb 记录训练曲线
+run_name: "sft_qwen2.5vl_v2"
+num_workers: 0  # 设置为0避免多进程内存问题
+deepspeed: "configs/ds_config_zero3.json"  # 改用ZeRO-3，更省显存

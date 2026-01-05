@@ -1,8 +1,6 @@
 """
-Supervised Fine-Tuning (SFT) script for Qwen2.5-VL on embodied planning task
-
-Usage:
-    python scripts/train_sft.py --config configs/sft_config.yaml
+Simplified SFT训练脚本 - 使用Transformers原生Trainer
+不依赖TRL，避免兼容性问题
 """
 
 import os
@@ -14,10 +12,11 @@ from pathlib import Path
 from transformers import (
     Qwen2_5_VLForConditionalGeneration,
     AutoProcessor,
-    AutoTokenizer
+    AutoTokenizer,
+    Trainer,
+    TrainingArguments
 )
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-from trl import SFTConfig, SFTTrainer as TRLSFTTrainer
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -30,7 +29,7 @@ logger = get_logger(__name__)
 
 
 class SFTTrainer:
-    """Trainer for Supervised Fine-Tuning"""
+    """Simplified SFT Trainer using Transformers Trainer"""
 
     def __init__(self, config: dict):
         self.config = config
@@ -57,19 +56,19 @@ class SFTTrainer:
             self.tokenizer.pad_token = self.tokenizer.eos_token
             self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
 
-        # 根据是否使用 DeepSpeed 决定 device_map
-        # DeepSpeed 需要 Trainer 自己处理设备分配
-        use_deepspeed = self.config['training'].get('deepspeed', None) is not None
-        device_map = None if use_deepspeed else "auto"
-
         # Load model
         self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_name,
             torch_dtype=torch.bfloat16 if self.config['training'].get('bf16', True) else torch.float16,
-            device_map=device_map,
+            device_map=None,  # DeepSpeed会处理设备分配
             trust_remote_code=True,
             local_files_only=True
         )
+
+        # Enable gradient checkpointing before LoRA (节省显存)
+        if self.config['training'].get('gradient_checkpointing', False):
+            logger.info("Enabling gradient checkpointing...")
+            self.model.gradient_checkpointing_enable()
 
         # Freeze vision encoder if specified
         if self.config['model'].get('freeze_vision_encoder', True):
@@ -88,10 +87,6 @@ class SFTTrainer:
                 bias="none",
                 task_type="CAUSAL_LM"
             )
-
-            # Prepare model for k-bit training if using quantization
-            if self.config['model'].get('load_in_8bit', False):
-                self.model = prepare_model_for_kbit_training(self.model)
 
             self.model = get_peft_model(self.model, lora_config)
             self.model.print_trainable_parameters()
@@ -121,26 +116,34 @@ class SFTTrainer:
         logger.info(f"Val samples: {len(self.val_dataset)}")
 
     def collate_fn(self, batch):
-        """
-        Custom collate function for batching
-
-        正确处理VLM的因果语言建模：
-        - 将完整序列 (prompt + response) tokenize
-        - prompt部分的labels设为-100（不计算loss）
-        - 只在response部分计算loss
-
-        关键：对于VLM，需要通过processor同时处理图像和文本，
-        图像会被转换为特殊的vision tokens插入到序列中
-        """
+        """Custom collate function for batching"""
         images = [item['image'] for item in batch]
         tasks = [item['input_text'] for item in batch]
         target_texts = [item['target_text'] for item in batch]
 
         # 构建完整的对话格式（包含assistant回复）
+        # 使用简单的 system prompt，只输出动作，不要 Thinking
+        simple_system_prompt = """You are an embodied AI agent. Given a scene image, task description, and action history, predict the NEXT ACTION.
+
+Available Actions:
+- Navigate(location): Move to a location (e.g., Navigate(CounterTop), Navigate(Fridge))
+- Pick(object): Pick up an object (e.g., Pick(Apple), Pick(ToiletPaper))
+- Place(receptacle): Place held object (e.g., Place(GarbageCan), Place(SinkBasin))
+- Open(object): Open container/appliance (e.g., Open(Fridge), Open(Drawer))
+- Close(object): Close container/appliance (e.g., Close(Cabinet))
+- TaskCompleted(): Task is finished
+
+Rules:
+1. Navigate before Pick
+2. Hold object before Place
+3. Output ONLY the action, nothing else
+
+Output: Action(Target)"""
+
         full_texts = []
         for task, target in zip(tasks, target_texts):
             messages = [
-                {"role": "system", "content": self.prompt_template.system_prompt},
+                {"role": "system", "content": simple_system_prompt},
                 {"role": "user", "content": [
                     {"type": "image"},
                     {"type": "text", "text": task}
@@ -158,7 +161,7 @@ class SFTTrainer:
         prompt_texts = []
         for task in tasks:
             messages = [
-                {"role": "system", "content": self.prompt_template.system_prompt},
+                {"role": "system", "content": simple_system_prompt},
                 {"role": "user", "content": [
                     {"type": "image"},
                     {"type": "text", "text": task}
@@ -177,8 +180,7 @@ class SFTTrainer:
             images=images,
             return_tensors="pt",
             padding=True,
-            truncation=True,
-            max_length=self.config['training']['max_length']
+            truncation=False,  # 关闭truncation，避免截断图像token
         )
 
         # 计算每个样本的prompt长度，用于设置labels
@@ -192,8 +194,7 @@ class SFTTrainer:
                 images=[images[i]],
                 return_tensors="pt",
                 padding=False,
-                truncation=True,
-                max_length=self.config['training']['max_length']
+                truncation=False,  # 关闭truncation
             )
             prompt_len = prompt_input['input_ids'].shape[1]
 
@@ -209,19 +210,12 @@ class SFTTrainer:
         return inputs
 
     def train(self):
-        """Run training with TRL SFTTrainer"""
+        """Run training with Transformers Trainer"""
         # Load data
         self.load_data()
 
-        # Get bf16 setting with default
-        use_bf16 = self.config['training'].get('bf16', True)
-
-        # DeepSpeed config path (optional)
-        deepspeed_config = self.config['training'].get('deepspeed', None)
-
-        # Setup SFT config (TRL's SFTConfig)
-        # 注意：只使用 SFTConfig 明确支持的参数
-        sft_config = SFTConfig(
+        # Setup TrainingArguments
+        training_args = TrainingArguments(
             output_dir=self.config['training']['output_dir'],
             num_train_epochs=self.config['training']['num_epochs'],
             per_device_train_batch_size=self.config['training']['per_device_train_batch_size'],
@@ -233,31 +227,32 @@ class SFTTrainer:
             logging_steps=self.config['training']['logging_steps'],
             save_steps=self.config['training']['save_steps'],
             eval_steps=self.config['training']['eval_steps'],
-            # Note: eval_strategy, save_strategy 等参数在某些 TRL 版本中可能不支持
-            # 如果报错，请移除下面的可选参数
-            bf16=use_bf16,
-            fp16=not use_bf16,
+            eval_strategy="steps",  # 新版transformers改名了
+            save_strategy="steps",
+            bf16=self.config['training'].get('bf16', True),
+            fp16=not self.config['training'].get('bf16', True),
             dataloader_num_workers=self.config['training'].get('num_workers', 4),
             remove_unused_columns=False,
-            report_to=self.config['training'].get('report_to', ['tensorboard']),
+            report_to=self.config['training'].get('report_to', []),
             run_name=self.config['training'].get('run_name', 'sft_qwen2.5vl'),
-            dataset_text_field="text",  # Will be handled by formatting function
-            packing=False,  # Don't pack samples for multimodal
-            deepspeed=deepspeed_config,  # DeepSpeed config
+            deepspeed=self.config['training'].get('deepspeed', None),
+            save_total_limit=3,
+            load_best_model_at_end=True,
+            metric_for_best_model="eval_loss",
+            gradient_checkpointing=self.config['training'].get('gradient_checkpointing', False),
         )
 
-        # Create TRL SFTTrainer
-        trainer = TRLSFTTrainer(
+        # Create Trainer
+        trainer = Trainer(
             model=self.model,
-            args=sft_config,
+            args=training_args,
             train_dataset=self.train_dataset,
             eval_dataset=self.val_dataset,
             data_collator=self.collate_fn,
-            processing_class=self.tokenizer,  # 新版 TRL 使用 processing_class 代替 tokenizer
         )
 
         # Train
-        logger.info("Starting SFT training with TRL...")
+        logger.info("Starting SFT training...")
         trainer.train()
 
         # Save final model
@@ -271,11 +266,11 @@ class SFTTrainer:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SFT training for Qwen2.5-VL")
+    parser = argparse.ArgumentParser(description="Simplified SFT training for Qwen2.5-VL")
     parser.add_argument("--config", type=str, default="configs/sft_config.yaml",
                         help="Path to config file")
     parser.add_argument("--local_rank", type=int, default=-1,
-                        help="Local rank for distributed training (automatically set by DeepSpeed)")
+                        help="Local rank for distributed training")
     args = parser.parse_args()
 
     # Load config
